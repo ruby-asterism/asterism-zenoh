@@ -11,8 +11,9 @@
 # - ubuntu-latest (x86_64), ubuntu-24.04-arm (arm64; free for public repos),
 #   macos-latest (arm64), macos-15-intel (x86_64). macos-13, the old Intel
 #   image, has been retired by GitHub; macos-15-intel is its replacement.
-# - Multicast scouting gets no answer on hosted runners; that test skips
-#   itself with the reason (test_features.rb, test_scout_and_scouting_peers).
+# - Multicast scouting (test_features.rb, test_scout_and_scouting_peers)
+#   gets answers on these runners and runs; where a network has no
+#   multicast, the test skips itself and says why.
 name: CI
 
 on:
