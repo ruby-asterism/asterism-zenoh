@@ -70,9 +70,20 @@ class TestFeatures < Minitest::Test
   end
 
   def test_timestamps
+    # Without timestamping the session has no HLC and zenoh takes the
+    # system clock, so two timestamps in a row may be equal where the clock
+    # is coarse (macOS: microseconds). Strictly increasing needs the HLC.
     t1 = @a.new_timestamp
     t2 = @a.new_timestamp
-    assert_operator t1, :<, t2
+    assert_operator t1, :<=, t2
+    hlc = Z::Session.open(nil, mode: :peer, listen: "tcp/127.0.0.1:#{TestHelper.free_port}", timestamping: true)
+    begin
+      ts = Array.new(200) { hlc.new_timestamp }
+      ts.each_cons(2) { |x, y| assert_operator x, :<, y }
+      assert_equal hlc.zid, ts[0].id
+    ensure
+      hlc.close
+    end
     assert_equal @a.zid, t1.id
     assert_in_delta Time.now.to_f, t1.to_time.to_f, 5
     assert_kind_of Integer, t1.ntp64

@@ -83,7 +83,7 @@ Every 0.2.0 call works as before; these are new keywords and methods.
 | `session.advanced_subscriber(key, depth = 16, history:, recovery:, subscriber_detection:, query_timeout_ms:)` -> `AdvancedSubscriber` | as `Subscriber`, plus `detect_publishers` (a `LivelinessWatch`) and `miss_listener` (`Miss`: `source_zid`, `source_eid`, `count`) |
 | `session.transport_events(depth = 16, history: false)`, `session.link_events(...)` -> `EventListener` | `each_pending` gives `TransportEvent` / `LinkEvent` (`kind` `:added` / `:removed`, `zid`, ...) |
 | `session.peer_zids`, `router_zids`, `transports`, `links` | the IDs, `Transport` and `Link` values connected now |
-| `session.new_timestamp` -> `Timestamp` | `ntp64`, `id`, `to_time`, Comparable |
+| `session.new_timestamp` -> `Timestamp` | `ntp64`, `id`, `to_time`, Comparable. From the session's HLC with `timestamping: true` (strictly increasing); otherwise from the system clock, so two in a row may be equal |
 | `Asterism::Zenoh::KeyExpr.new(str, autocanonize: false)` | `intersects?`, `includes?`, `relation_to` (`:disjoint` / `:intersects` / `:includes` / `:equals`), `join`, `concat`, `==`; `KeyExpr.canonize(str)`, `KeyExpr.valid?(str)`. Accepted wherever a key String is |
 | `session.declare_keyexpr(key)` -> `KeyExpr` | declared on the session (sent as a number afterwards); `undeclare` |
 | `Asterism::Zenoh.init_log(level = nil)` | zenoh-c's log on standard output (`"info"`, `"debug"`, or a filter); `RUST_LOG` wins |
