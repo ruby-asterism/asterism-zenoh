@@ -8,7 +8,7 @@ same Ruby code runs on a PC and on the boards.
 ```ruby
 require "asterism/zenoh"
 
-s = Asterism::Zenoh::Session.open("tcp/192.168.10.2:7447")   # client of a router
+s = Asterism::Zenoh::Session.open("tcp/192.0.2.2:7447")   # client of a router
 sub = s.subscribe("demo/in")
 loop do
   break unless s.poll                       # false once the connection is lost
