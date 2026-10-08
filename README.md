@@ -101,6 +101,39 @@ binding are the `asterism` gem
 
 ## License
 
-MIT (see LICENSE). zenoh-c, which the extension links, is Eclipse Zenoh's
-(EPL-2.0 OR Apache-2.0). It is not part of this repository: `rake
-zenoh_c:fetch` downloads the official release.
+MIT (see LICENSE) for everything in this repository. The C extension
+(`ext/asterism_zenoh/zenoh.c`) is this gem's own code: it calls zenoh-c's
+API and copies no code from zenoh-c's examples or headers.
+
+### zenoh-c is not in this repository
+
+[zenoh-c](https://github.com/eclipse-zenoh/zenoh-c) (Eclipse Zenoh's C
+binding, Copyright ZettaScale Technology) is offered under the Eclipse
+Public License 2.0 or the Apache License, Version 2.0 (EPL-2.0 OR
+Apache-2.0). This gem uses it under the **Apache License, Version 2.0**.
+It is not part of this repository or of the gem's source package:
+`rake zenoh_c:fetch` downloads the official prebuilt release pinned in
+`ZENOH_C_PIN` (sha256 checked) into `vendor/`, which git ignores, and
+`rake compile` copies its `libzenohc.so` next to the extension (also
+ignored). Nothing of zenoh-c is committed or packaged.
+
+### Distribution notes
+
+The source gem carries no zenoh-c, so it needs nothing more than LICENSE.
+A package that **does** carry zenoh-c (a prebuilt gem with `libzenohc.so`,
+a container image, an archive of a built `lib/`) is a redistribution of
+zenoh-c under the Apache License, Version 2.0, and must also carry:
+
+- the text of the Apache License, Version 2.0 (zenoh-c's LICENSE holds it,
+  together with the EPL-2.0 text);
+- zenoh-c's NOTICE.md (its notices, including the Eclipse trademark
+  notice), unchanged;
+- the licenses and notices of the Rust crates compiled into
+  `libzenohc.so` (zenoh and its dependencies, listed in zenoh-c's
+  Cargo.lock; zenoh-c's NOTICE.md does not list them). Collect them from
+  that Cargo.lock for the pinned release with a tool such as cargo-about
+  before publishing such a package.
+
+The prebuilt release archive pinned now contains only `include/` and `lib/`,
+not LICENSE or NOTICE.md; take those from the zenoh-c repository at the
+pinned tag.
