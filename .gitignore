@@ -1,0 +1,6 @@
+/vendor/
+/tmp/
+/pkg/
+*.so
+*.o
+*.gem

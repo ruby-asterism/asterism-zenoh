@@ -1,0 +1,15 @@
+# Pinned zenoh-c (Eclipse Zenoh's C binding of the Rust implementation), used
+# by the asterism-zenoh gem (the CRuby Asterism::Zenoh).
+# Same scheme as ZENOH_PICO_PIN of picoruby-asterism-zenoh:
+# - `rake zenoh_c:fetch` downloads the official prebuilt release for this
+#   machine (asset below), checks its sha256 and unpacks it into
+#   vendor/zenoh-c (gitignored). Nothing is built with Rust.
+# - Upstream tag 1.10.1: the same number as zenoh-pico (the boards, pinned
+#   in picoruby-asterism-zenoh) and the zenohd router used in the tests of
+#   the Family mruby project. Zenoh keeps the wire compatible within 1.x;
+#   keep them together anyway.
+# - To update: bump the tag, the asset names and their sha256 here.
+repo: https://github.com/eclipse-zenoh/zenoh-c
+tag: 1.10.1
+asset.x86_64-linux: zenoh-c-1.10.1-x86_64-unknown-linux-gnu-standalone.zip
+sha256.x86_64-linux: 9ee0f2d732b0f3042a7e1cd3076042a2bc3ac0415587c40bc3ed7b8b62fbde11
