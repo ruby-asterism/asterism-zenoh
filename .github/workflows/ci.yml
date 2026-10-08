@@ -33,7 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
-        ruby: ["3.2", "3.3", "3.4"]
+        ruby: ["3.2", "3.3", "3.4", "4.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
@@ -41,6 +41,14 @@ jobs:
           ruby-version: ${{ matrix.ruby }}
       - name: rake (fetch zenoh-c, compile, test)
         run: rake
+        timeout-minutes: 15
+      # String literals may become frozen by default in a future Ruby:
+      # run the tests once more with them frozen.
+      - name: rake test with frozen string literals
+        if: matrix.ruby == '4.0'
+        run: rake test
+        env:
+          RUBYOPT: --enable-frozen-string-literal
         timeout-minutes: 15
 
   install:
@@ -50,7 +58,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
-        ruby: ["3.4"]
+        ruby: ["3.4", "4.0"]
         include:
           - os: ubuntu-latest
             ruby: "3.2"
