@@ -1,0 +1,86 @@
+# CI for asterism-zenoh.
+#
+# test:    `rake` (fetches the pinned zenoh-c, compiles, runs the tests) on
+#          each OS / CPU and Ruby.
+# install: `rake gem`, then `gem install --local` of the built gem with
+#          nothing pre-fetched (extconf.rb downloads zenoh-c itself, and on
+#          macOS rewrites the dylib's install name), then
+#          test/installed_check.rb from outside the repository.
+#
+# Runners:
+# - ubuntu-latest (x86_64), ubuntu-24.04-arm (arm64; free for public repos),
+#   macos-latest (arm64), macos-15-intel (x86_64). macos-13, the old Intel
+#   image, has been retired by GitHub; macos-15-intel is its replacement.
+# - Multicast scouting gets no answer on hosted runners; that test skips
+#   itself with the reason (test_features.rb, test_scout_and_scouting_peers).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, Ruby ${{ matrix.ruby }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+        ruby: ["3.2", "3.3", "3.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: rake (fetch zenoh-c, compile, test)
+        run: rake
+        timeout-minutes: 15
+
+  install:
+    name: gem install (${{ matrix.os }}, Ruby ${{ matrix.ruby }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+        ruby: ["3.4"]
+        include:
+          - os: ubuntu-latest
+            ruby: "3.2"
+          - os: macos-latest
+            ruby: "3.2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: rake gem
+        run: rake gem
+      - name: gem install --local (downloads zenoh-c at install time)
+        run: |
+          test ! -e vendor/zenoh-c
+          gem install --local --no-document pkg/asterism-zenoh-*.gem
+          gem contents asterism-zenoh | grep -E 'libzenohc|asterism_zenoh\.'
+      - name: install name of zenoh-c in the installed bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          dir=$(ruby -e 'print Gem::Specification.find_by_name("asterism-zenoh").full_gem_path')/lib/asterism
+          otool -L "$dir"/asterism_zenoh.bundle
+          otool -L "$dir"/asterism_zenoh.bundle | grep -q '@rpath/libzenohc.dylib'
+          otool -l "$dir"/asterism_zenoh.bundle | grep -A2 LC_RPATH | grep -q '@loader_path'
+          codesign --verify --verbose "$dir"/asterism_zenoh.bundle
+      - name: require + put / subscribe from the installed gem
+        working-directory: ${{ runner.temp }}
+        run: ruby "$GITHUB_WORKSPACE/test/installed_check.rb"
+        timeout-minutes: 5
+      - name: gem uninstall leaves nothing behind
+        run: |
+          dir=$(ruby -e 'print Gem::Specification.find_by_name("asterism-zenoh").full_gem_path')
+          gem uninstall -a -x asterism-zenoh
+          test ! -e "$dir"
