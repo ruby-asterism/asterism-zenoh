@@ -100,7 +100,9 @@ prebuilt zenoh-c release pinned in `ZENOH_C_PIN`:
    it, stop with what to do instead (`ZENOH_C_DIR`, or a mirror).
 
 Pinned machines: x86_64 and aarch64 Linux (glibc and musl), x86_64 and
-arm64 macOS. `ASTERISM_ZENOH_C_MIRROR=<base>` downloads
+arm64 macOS. The glibc builds of zenoh-c need glibc 2.34 or newer (Ubuntu
+22.04, Debian 12 and later). macOS is handled by extconf (the dylib's install
+name is rewritten to `@rpath`) but has not been tested yet. `ASTERISM_ZENOH_C_MIRROR=<base>` downloads
 `<base>/<tag>/<asset>` instead (an http(s) or `file://` URL, or a local
 directory), for a mirror or a machine without access to GitHub.
 
