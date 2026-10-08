@@ -5,7 +5,9 @@ Gem::Specification.new do |s|
   s.version = Asterism::Zenoh::VERSION
   s.summary = "Asterism::Zenoh: an unofficial Zenoh binding for Ruby (over zenoh-c)"
   s.description = "Sessions, put / subscribe, get / queryable, liveliness and attachments, " \
-                  "received by polling. The same Ruby API as Asterism's mruby / PicoRuby binding. " \
+                  "received by polling. The same Ruby API as Asterism's mruby / PicoRuby binding, " \
+                  "plus (CRuby only) configuration and TLS, scouting, publishers, queriers, the " \
+                  "advanced publisher / subscriber, events, key expressions and timestamps. " \
                   "The C extension is compiled at install time against the official prebuilt " \
                   "zenoh-c release for the machine, downloaded and checked against a pinned sha256."
   s.authors = ["Katsuhiko Kageyama"]
@@ -25,7 +27,7 @@ Gem::Specification.new do |s|
   # helper (zenoh_c.rb), ZENOH_C_PIN (assets and sha256), and the license
   # texts installed next to zenoh-c.
   s.files = Dir["lib/**/*.rb", "ext/**/*.{c,rb}", "licenses/zenoh-c/*",
-                "README.md", "LICENSE", "ZENOH_C_PIN"]
+                "docs/*.md", "README.md", "LICENSE", "ZENOH_C_PIN"]
   s.extensions = ["ext/asterism_zenoh/extconf.rb"]
   s.require_paths = ["lib"]
 end

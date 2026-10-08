@@ -17,7 +17,12 @@ class TestZenohThreads < Minitest::Test
       # loses its only peer when a closes.
       victim = i.odd? ? b : a
       user = b
+      pub = user.publisher("c5/race/p")
+      qr = user.querier("c5/race/q", timeout_ms: 50)
       workers = [
+        -> { pub.put("z" * 32, timestamp: true) },
+        -> { qr.get.each_result },
+        -> { user.delete("c5/race/x") },
         -> { user.put("c5/race/x", "y" * 64) },
         -> { user.poll && user.peers },
         -> { user.liveliness("c5/race/t#{rand(1000)}").close },

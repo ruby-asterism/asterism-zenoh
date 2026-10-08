@@ -18,6 +18,28 @@ loop do
 end
 ```
 
+## Feature coverage
+
+Supported: sessions (client, peer, listening, multicast scouting), any
+zenoh configuration (a Hash of keys, a JSON5 String or file: TLS, QUIC,
+WebSocket, authentication, timeouts), put / delete with encoding, priority,
+congestion control, express, reliability and timestamps, declared
+publishers and queriers with matching status, subscribers with the full
+sample (kind, encoding, timestamp, ...), get / queryable with error and
+delete replies, liveliness, the advanced publisher / subscriber (history
+for late subscribers, recovery, publisher detection; ROS 2 transient
+local), transport and link events, key expression operations and declared
+key expressions, HLC timestamps, zenoh-c's log.
+
+Not exposed: shared memory, background declarations, zenoh's own
+serializer (MessagePack and CDR are used instead), the publication cache /
+querying subscriber (the older form of the advanced ones), cancelling a
+get.
+
+The table, with the reasons and what the boards' zenoh-pico could offer:
+[docs/feature_coverage.md](docs/feature_coverage.md). The calls added in
+0.3.0 are CRuby only.
+
 ## API
 
 The same calls, arguments and results as the mruby / PicoRuby gem
@@ -40,6 +62,65 @@ The same calls, arguments and results as the mruby / PicoRuby gem
 
 Keys come back as UTF-8 Strings, payloads and attachments as binary
 (ASCII-8BIT) Strings.
+
+### Added in 0.3.0 (CRuby only)
+
+Every 0.2.0 call works as before; these are new keywords and methods.
+
+| Call | Notes |
+|---|---|
+| `Session.open(locator = nil, mode:, listen:, scouting:, timestamping:, config:, config_file:)` | `config:` a Hash (`{"transport/link/tls/root_ca_certificate" => "ca.pem"}`, Ruby values sent as JSON) or a JSON5 String; `config_file:` a JSON5 file. Lowest first: zenoh's defaults, the gem's own settings (no scouting, the time limits), the file / String, the arguments, the Hash. `scouting: true` needs no locator |
+| `Asterism::Zenoh.scout(what: [:router, :peer], timeout: 1.0, config: nil)` | Array of `Hello` (`zid`, `whatami`, `locators`) |
+| `session.put(key, payload, attachment:, encoding:, priority:, congestion_control:, express:, reliability:, timestamp:, allowed_destination:)` | `priority:` `:real_time` .. `:background` (or 1..7), `congestion_control:` `:drop` / `:block` / `:block_first`, `reliability:` `:reliable` / `:best_effort`, `timestamp:` `true` or a `Timestamp`, `allowed_destination:` `:any` / `:remote` / `:session_local` |
+| `session.delete(key, ...)` | the same options without payload, attachment and encoding |
+| `session.publisher(key, encoding:, priority:, ...)` -> `Publisher` | `put(payload, attachment:, encoding:, timestamp:)`, `delete(timestamp:)`, `matching?`, `matching_listener(depth = 16)`, `close` / `closed?` |
+| `session.querier(key, target:, consolidation:, timeout_ms:, ...)` -> `Querier` | `get(params = nil, payload = nil, attachment:, encoding:)` -> `Get`, `matching?`, `matching_listener`, `close` |
+| `sub.each_sample { \|sample\| }` | `Sample` (`key`, `payload`, `attachment`, `kind`, `encoding`, `timestamp`, `priority`, `congestion_control`, `express`, `reliability`, `source_zid`); same queue as `each_pending` |
+| `get.each_result { \|reply\| }` | `Reply` (`ok?` / `error?`, `key`, `payload`, `encoding`, `kind`, `timestamp`, `replier_zid`); error replies included. `each_reply` still leaves them out |
+| `session.get(..., encoding:, priority:, congestion_control:, express:, accept_replies:)` | |
+| `q.reply(..., encoding:, timestamp:, priority:, congestion_control:, express:)`, `q.reply_err(payload, encoding:)`, `q.reply_del(key = nil)`, `q.encoding` | |
+| `session.advanced_publisher(key, cache:, sample_miss_detection:, publisher_detection:, ...)` -> `AdvancedPublisher` | as `Publisher`. `cache: N` keeps the last N samples for late subscribers |
+| `session.advanced_subscriber(key, depth = 16, history:, recovery:, subscriber_detection:, query_timeout_ms:)` -> `AdvancedSubscriber` | as `Subscriber`, plus `detect_publishers` (a `LivelinessWatch`) and `miss_listener` (`Miss`: `source_zid`, `source_eid`, `count`) |
+| `session.transport_events(depth = 16, history: false)`, `session.link_events(...)` -> `EventListener` | `each_pending` gives `TransportEvent` / `LinkEvent` (`kind` `:added` / `:removed`, `zid`, ...) |
+| `session.peer_zids`, `router_zids`, `transports`, `links` | the IDs, `Transport` and `Link` values connected now |
+| `session.new_timestamp` -> `Timestamp` | `ntp64`, `id`, `to_time`, Comparable |
+| `Asterism::Zenoh::KeyExpr.new(str, autocanonize: false)` | `intersects?`, `includes?`, `relation_to` (`:disjoint` / `:intersects` / `:includes` / `:equals`), `join`, `concat`, `==`; `KeyExpr.canonize(str)`, `KeyExpr.valid?(str)`. Accepted wherever a key String is |
+| `session.declare_keyexpr(key)` -> `KeyExpr` | declared on the session (sent as a number afterwards); `undeclare` |
+| `Asterism::Zenoh.init_log(level = nil)` | zenoh-c's log on standard output (`"info"`, `"debug"`, or a filter); `RUST_LOG` wins |
+
+Listeners (`MatchingListener`, `EventListener`) are polled like the
+subscribers: `each_pending` (yields or returns an Array), `pending`,
+`received`, `dropped`, `close` / `closed?`. The values are `Data` objects
+(`lib/asterism/zenoh/values.rb`), so they work with pattern matching.
+
+```ruby
+Z = Asterism::Zenoh
+s = Z::Session.open("tls/192.0.2.2:7447",
+                    config: { "transport/link/tls/root_ca_certificate" => "ca.pem" })
+pub = s.publisher("demo/temp", encoding: "text/plain", priority: :data_high)
+watch = pub.matching_listener
+sub = s.subscribe("demo/**")
+loop do
+  watch.each_pending { |listening| puts "listened to: #{listening}" }
+  pub.put("21.5", timestamp: true)
+  sub.each_sample do |sm|
+    case sm
+    in {kind: :delete, key:} then puts "#{key} deleted"
+    in {encoding: "application/json", payload:} then p payload
+    else puts "#{sm.key} at #{sm.timestamp&.to_time}"
+    end
+  end
+  sleep 0.1
+end
+
+# A late subscriber gets the last values (ROS 2's transient local works this way)
+latched = s.advanced_publisher("demo/mode", cache: 1, sample_miss_detection: true)
+latched.put("eco")
+late = s.advanced_subscriber("demo/mode", history: true)
+
+Z.scout(what: :peer, timeout: 1.0).each { |h| puts "#{h.zid} #{h.locators}" }
+Z::KeyExpr.new("demo/*").includes?("demo/temp")   # => true
+```
 
 `require "asterism/zenoh/global"` defines `Zenoh = Asterism::Zenoh` for
 those who want the short name; nothing defines it by default.
@@ -67,14 +148,14 @@ thread and Enumerators on top of this API are in the CRuby layer of the
 
 ## Behaviour kept from the mruby gem
 
-- **No scouting**: the locator is given. A peer that only connects does not
-  listen.
+- **No scouting** unless asked for (`scouting: true`): the locator is
+  given. A peer that only connects does not listen.
 - **Remote only**: a session's own puts do not reach its own subscribers,
   and its gets do not reach its own queryables (zenoh-pico's behaviour;
   Asterism calls its own objects in place).
 - **Losing the connection**: a client session is closed when it has no
   router left, a peer session that only connects when it has no peer left;
-  a listening session stays open. From then on `poll` is false, `closed?`
+  a listening (or scouting) session stays open. From then on `poll` is false, `closed?`
   true, and `put` raises `Asterism::Zenoh::Error`. No reconnection.
 - **Full queues drop the oldest** entry and count it in `dropped` (a dropped
   query is finished, so its requester gets no answer from it).
