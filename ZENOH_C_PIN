@@ -1,15 +1,31 @@
 # Pinned zenoh-c (Eclipse Zenoh's C binding of the Rust implementation), used
 # by the asterism-zenoh gem (the CRuby Asterism::Zenoh).
 # Same scheme as ZENOH_PICO_PIN of picoruby-asterism-zenoh:
-# - `rake zenoh_c:fetch` downloads the official prebuilt release for this
-#   machine (asset below), checks its sha256 and unpacks it into
-#   vendor/zenoh-c (gitignored). Nothing is built with Rust.
+# - At `gem install`, extconf.rb downloads the official prebuilt release for
+#   the machine (asset.<platform> below) from <repo>/releases/download/<tag>/,
+#   checks its sha256 and builds the extension against it
+#   (ext/asterism_zenoh/zenoh_c.rb). `rake zenoh_c:fetch` does the same into
+#   vendor/zenoh-c (gitignored) for working in the repository. Nothing is
+#   built with Rust.
 # - Upstream tag 1.10.1: the same number as zenoh-pico (the boards, pinned
 #   in picoruby-asterism-zenoh) and the zenohd router used in the tests of
 #   the Family mruby project. Zenoh keeps the wire compatible within 1.x;
 #   keep them together anyway.
+# - <platform> is <cpu>-<os> as ZenohCFetch.platform_key names this machine.
+#   The sha256 values were computed from the downloaded archives and agree
+#   with the digests GitHub lists for the release assets.
 # - To update: bump the tag, the asset names and their sha256 here.
 repo: https://github.com/eclipse-zenoh/zenoh-c
 tag: 1.10.1
 asset.x86_64-linux: zenoh-c-1.10.1-x86_64-unknown-linux-gnu-standalone.zip
 sha256.x86_64-linux: 9ee0f2d732b0f3042a7e1cd3076042a2bc3ac0415587c40bc3ed7b8b62fbde11
+asset.aarch64-linux: zenoh-c-1.10.1-aarch64-unknown-linux-gnu-standalone.zip
+sha256.aarch64-linux: 65970bbed6dc10fec4fa39d05f3876e85fcb9b0f87d5be0a54bd7517240db501
+asset.x86_64-linux-musl: zenoh-c-1.10.1-x86_64-unknown-linux-musl-standalone.zip
+sha256.x86_64-linux-musl: 293866bb632fd579fb0603bbfdb8d383e7c2d4eadc8ec3ae199fafa1dbc99c55
+asset.aarch64-linux-musl: zenoh-c-1.10.1-aarch64-unknown-linux-musl-standalone.zip
+sha256.aarch64-linux-musl: de99cc82c7ae93eaa2aa5a0c8bcfcefed7624b0e0f85c679f7dba9c54ccdff9c
+asset.x86_64-darwin: zenoh-c-1.10.1-x86_64-apple-darwin-standalone.zip
+sha256.x86_64-darwin: 6578ef42b0460a0522e7af4b1baa965ec75ce39f4c652cdd938252fdf6695219
+asset.aarch64-darwin: zenoh-c-1.10.1-aarch64-apple-darwin-standalone.zip
+sha256.aarch64-darwin: 82da6e95eb895413369f55d1a53eb5b621b22ab8afc446b041b7760eec240ff4

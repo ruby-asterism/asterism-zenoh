@@ -77,10 +77,43 @@ limit, not 3; the time limits of gets are kept by zenoh-c (exact, not
 checked once a second); liveliness watches may also report the session's
 own tokens.
 
+## Installing
+
+```
+gem install asterism-zenoh       # or `gem install asterism`, which depends on it
+```
+
+Needs CRuby 3.2+ and a C compiler; nothing else (no Rust, no git, curl or
+unzip). `gem install` compiles the C extension against the official
+prebuilt zenoh-c release pinned in `ZENOH_C_PIN`:
+
+1. With `ZENOH_C_DIR` set (or `gem install asterism-zenoh --
+   --with-zenoh-c-dir=DIR`), that zenoh-c (its `include/` and `lib/`) is
+   used and nothing is downloaded.
+2. Otherwise extconf.rb downloads the release archive for the machine from
+   `https://github.com/eclipse-zenoh/zenoh-c/releases/download/<tag>/`
+   (Ruby's net/http; proxies from the usual environment variables), checks
+   it against the sha256 pinned for that machine, and unpacks `include/`
+   and the shared library with Ruby's zlib. An archive whose sha256 differs
+   is not used.
+3. Machines without a pinned release, and machines that cannot download
+   it, stop with what to do instead (`ZENOH_C_DIR`, or a mirror).
+
+Pinned machines: x86_64 and aarch64 Linux (glibc and musl), x86_64 and
+arm64 macOS. `ASTERISM_ZENOH_C_MIRROR=<base>` downloads
+`<base>/<tag>/<asset>` instead (an http(s) or `file://` URL, or a local
+directory), for a mirror or a machine without access to GitHub.
+
+The installed gem has, in `lib/asterism/`, the extension, zenoh-c's shared
+library next to it (found through the rpath: `$ORIGIN` on Linux,
+`@loader_path` on macOS), and `zenoh-c/` with the text of the Apache
+License 2.0, zenoh-c's NOTICE.md and `SOURCE` (which archive was used, and
+its sha256). The downloaded archive is not kept. `gem uninstall` removes
+all of it.
+
 ## Building and testing
 
-Needs CRuby 3.2+, a C compiler, `curl` and `unzip`. No Rust: zenoh-c is the
-official prebuilt release.
+In the repository (needs CRuby 3.2+ and a C compiler):
 
 ```
 rake                  # zenoh_c:fetch, compile, test
@@ -89,11 +122,13 @@ rake compile          # build lib/asterism/asterism_zenoh.so (+ libzenohc.so)
 rake test             # two sessions over a local peer link; no router needed
 ASTERISM_TEST_ROUTER=tcp/127.0.0.1:7447 rake test   # the same through a zenohd router
 ZENOH_C_DIR=/path/to/zenoh-c rake compile           # use another zenoh-c (include/ and lib/)
+rake gem              # build pkg/asterism-zenoh-<version>.gem
 ```
 
-The extension links `libzenohc.so`, which is copied next to it
-(`rpath $ORIGIN`), so `ruby -I lib` works without installing anything.
-Prebuilt zenoh-c is pinned for x86_64 Linux only for now.
+`rake zenoh_c:fetch` uses the same code as the installation
+(`ext/asterism_zenoh/zenoh_c.rb`). The extension links zenoh-c's shared
+library, which `rake compile` copies next to it, so `ruby -I lib` works
+without installing anything.
 
 The object layer, the ROS 2 node and the message types on top of this
 binding are the `asterism` gem
@@ -101,39 +136,43 @@ binding are the `asterism` gem
 
 ## License
 
-MIT (see LICENSE) for everything in this repository. The C extension
+MIT (see LICENSE) for everything in this repository except
+`licenses/zenoh-c/` (zenoh-c's notices and the Apache License text, below).
+The C extension
 (`ext/asterism_zenoh/zenoh.c`) is this gem's own code: it calls zenoh-c's
 API and copies no code from zenoh-c's examples or headers.
 
-### zenoh-c is not in this repository
+### zenoh-c is not in this repository or in the gem file
 
 [zenoh-c](https://github.com/eclipse-zenoh/zenoh-c) (Eclipse Zenoh's C
 binding, Copyright ZettaScale Technology) is offered under the Eclipse
 Public License 2.0 or the Apache License, Version 2.0 (EPL-2.0 OR
 Apache-2.0). This gem uses it under the **Apache License, Version 2.0**.
-It is not part of this repository or of the gem's source package:
-`rake zenoh_c:fetch` downloads the official prebuilt release pinned in
-`ZENOH_C_PIN` (sha256 checked) into `vendor/`, which git ignores, and
-`rake compile` copies its `libzenohc.so` next to the extension (also
-ignored). Nothing of zenoh-c is committed or packaged.
+Neither this repository nor the gem file contains it: `gem install` (and
+`rake zenoh_c:fetch`) downloads the official prebuilt release pinned in
+`ZENOH_C_PIN` (sha256 checked) on the user's machine, from zenoh-c's own
+GitHub releases (or a mirror the user names).
+
+The prebuilt release archives contain only `include/` and `lib/`, not
+zenoh-c's LICENSE or NOTICE.md. So the gem carries, in `licenses/zenoh-c/`,
+the text of the Apache License, Version 2.0 (`LICENSE-APACHE`) and zenoh-c's
+NOTICE.md at the pinned tag, unchanged, and installs both next to the
+shared library (`lib/asterism/zenoh-c/`). The gemspec lists `MIT` and
+`Apache-2.0`: MIT for this gem's own code, Apache-2.0 for zenoh-c, which
+the installed gem holds.
 
 ### Distribution notes
 
-The source gem carries no zenoh-c, so it needs nothing more than LICENSE.
-A package that **does** carry zenoh-c (a prebuilt gem with `libzenohc.so`,
-a container image, an archive of a built `lib/`) is a redistribution of
-zenoh-c under the Apache License, Version 2.0, and must also carry:
+A package that **carries** zenoh-c itself (a prebuilt, platform-specific
+gem with the shared library inside, a container image, an archive of an
+installed gem or a built `lib/`) is a redistribution of zenoh-c under the
+Apache License, Version 2.0, and must carry:
 
-- the text of the Apache License, Version 2.0 (zenoh-c's LICENSE holds it,
-  together with the EPL-2.0 text);
-- zenoh-c's NOTICE.md (its notices, including the Eclipse trademark
-  notice), unchanged;
-- the licenses and notices of the Rust crates compiled into
-  `libzenohc.so` (zenoh and its dependencies, listed in zenoh-c's
-  Cargo.lock; zenoh-c's NOTICE.md does not list them). Collect them from
-  that Cargo.lock for the pinned release with a tool such as cargo-about
+- the text of the Apache License, Version 2.0, and zenoh-c's NOTICE.md
+  (its notices, including the Eclipse trademark notice), unchanged: the
+  installed `lib/asterism/zenoh-c/` has both;
+- the licenses and notices of the Rust crates compiled into the shared
+  library (zenoh and its dependencies, listed in zenoh-c's Cargo.lock;
+  zenoh-c's NOTICE.md does not list them). Collect them from that
+  Cargo.lock for the pinned release with a tool such as cargo-about
   before publishing such a package.
-
-The prebuilt release archive pinned now contains only `include/` and `lib/`,
-not LICENSE or NOTICE.md; take those from the zenoh-c repository at the
-pinned tag.

@@ -6,9 +6,10 @@
 #   rake test            two sessions over a local peer link (no router needed);
 #                        ASTERISM_TEST_ROUTER=tcp/host:7447 runs them through a router
 #   rake clean           remove the build products (vendor/ stays)
-require "digest"
+#   rake gem             build pkg/asterism-zenoh-<version>.gem
 require "fileutils"
 require "rbconfig"
+require_relative "ext/asterism_zenoh/zenoh_c"
 
 ROOT = __dir__
 VENDOR = File.join(ROOT, "vendor")
@@ -20,44 +21,21 @@ EXT_BUILD = File.join(ROOT, "tmp/ext")
 EXT_LIB = File.join(ROOT, "lib/asterism")
 DLEXT = RbConfig::CONFIG["DLEXT"]
 
-def pin
-  @pin ||= File.readlines(File.join(ROOT, "ZENOH_C_PIN")).each_with_object({}) do |l, h|
-    next if l.start_with?("#") || !l.include?(":")
-    k, v = l.split(":", 2)
-    h[k.strip] = v.strip
-  end
-end
-
-def platform_key
-  cpu = RbConfig::CONFIG["host_cpu"]
-  os = RbConfig::CONFIG["host_os"]
-  return "x86_64-linux" if cpu =~ /x86_64|amd64/ && os =~ /linux/
-  abort "no prebuilt zenoh-c is pinned for #{cpu}-#{os} (ZENOH_C_PIN; or set ZENOH_C_DIR)"
-end
-
 namespace :zenoh_c do
-  desc "Download the pinned prebuilt zenoh-c into vendor/zenoh-c"
+  desc "Download the pinned prebuilt zenoh-c into vendor/zenoh-c (sha256 checked)"
   task :fetch do
     next unless ENV["ZENOH_C_DIR"].to_s.empty?
-    key = platform_key
-    asset = pin["asset.#{key}"] or abort "ZENOH_C_PIN has no asset for #{key}"
-    sha = pin["sha256.#{key}"] or abort "ZENOH_C_PIN has no sha256 for #{key}"
+    key = ZenohCFetch.platform_key
+    sha = ZenohCFetch.pin["sha256.#{key}"]
     stamp = File.join(ZENOH_C_DIR, ".pin")
-    next if File.exist?(stamp) && File.read(stamp).strip == sha
-    url = "#{pin['repo']}/releases/download/#{pin['tag']}/#{asset}"
-    FileUtils.mkdir_p(VENDOR)
-    zip = File.join(VENDOR, asset)
-    unless File.exist?(zip) && Digest::SHA256.file(zip).hexdigest == sha
-      sh "curl", "-sSfL", "-o", zip, url
+    next if sha && File.exist?(stamp) && File.read(stamp).strip == sha
+    begin
+      got = ZenohCFetch.fetch(ZENOH_C_DIR, key)
+    rescue ZenohCFetch::Error => e
+      abort e.message
     end
-    got = Digest::SHA256.file(zip).hexdigest
-    abort "sha256 mismatch for #{asset}: #{got} (pinned #{sha})" unless got == sha
-    FileUtils.rm_rf(ZENOH_C_DIR)
-    FileUtils.mkdir_p(ZENOH_C_DIR)
-    sh "unzip", "-q", "-o", zip, "-d", ZENOH_C_DIR
-    abort "the archive has no include/zenoh.h" unless File.exist?(File.join(ZENOH_C_DIR, "include/zenoh.h"))
-    File.write(stamp, sha + "\n")
-    puts "zenoh-c #{pin['tag']} (#{key}) in #{ZENOH_C_DIR}"
+    File.write(stamp, got["sha256"] + "\n")
+    puts "zenoh-c #{got['tag']} (#{key}) in #{ZENOH_C_DIR}"
   end
 end
 
@@ -70,7 +48,7 @@ task compile: "zenoh_c:fetch" do
   end
   FileUtils.mkdir_p(EXT_LIB)
   FileUtils.cp(File.join(EXT_BUILD, "asterism_zenoh.#{DLEXT}"), EXT_LIB)
-  FileUtils.cp(File.join(ZENOH_C_DIR, "lib/libzenohc.so"), EXT_LIB)
+  FileUtils.cp(File.join(ZENOH_C_DIR, "lib", ZenohCFetch.lib_name), EXT_LIB)
 end
 
 desc "Run the tests (two sessions over a local peer link, no router needed)"
@@ -83,7 +61,16 @@ end
 desc "Remove the build products (vendor/ stays)"
 task :clean do
   FileUtils.rm_rf(File.join(ROOT, "tmp"))
-  FileUtils.rm_f(Dir.glob(File.join(EXT_LIB, "*.{#{DLEXT},so}")))
+  FileUtils.rm_f(Dir.glob(File.join(EXT_LIB, "*.{#{DLEXT},so,dylib}")))
+end
+
+desc "Build the gem file into pkg/ (only builds; publishing is a separate, manual step)"
+task :gem do
+  require_relative "lib/asterism/zenoh/version"
+  FileUtils.mkdir_p(File.join(ROOT, "pkg"))
+  Dir.chdir(ROOT) do
+    sh "gem", "build", "asterism-zenoh.gemspec", "--output", "pkg/asterism-zenoh-#{Asterism::Zenoh::VERSION}.gem"
+  end
 end
 
 task default: :test
