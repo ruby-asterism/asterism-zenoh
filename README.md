@@ -55,8 +55,15 @@ its own thread. Nothing calls into Ruby behind its back, and `poll` does not
 need to run for data to arrive: it only checks the connection.
 
 Waiting calls (`Session.open`, `put`, `get`, `liveliness_get`, `close`)
-release the GVL. One `Session` and its objects are meant to be used from
-one Ruby thread at a time, as on the boards.
+release the GVL. A `Session` and its objects may be used from several Ruby
+threads: the calls that keep the GVL are serialized by it, the ones that
+release it by a lock of the session, and a session that closes (by `close`
+or because the connection was lost) is closed for every thread before
+zenoh-c lets it go; calls made after that raise `Asterism::Zenoh::Error`.
+Each entry of a queue is taken by exactly one `each_pending` /
+`each_reply`. The gem itself starts no Ruby thread: blocks, a receiving
+thread and Enumerators on top of this API are in the CRuby layer of the
+`asterism` gem.
 
 ## Behaviour kept from the mruby gem
 

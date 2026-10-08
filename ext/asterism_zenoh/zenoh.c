@@ -18,7 +18,10 @@
  * thread. Session#poll only checks the connection: receiving needs no poll.
  *
  * The GVL is released while zenoh-c may wait: opening a session (connecting
- * to the router), put, get, liveliness_get and close.
+ * to the router), put, get, liveliness_get and close. A session may be used
+ * from several Ruby threads: the calls that hold the GVL are serialized by
+ * it, the ones without it by the session's op_lock, and closing marks the
+ * session closed for Ruby (with the GVL held) before zenoh-c drops it.
  *
  * Losing the connection (same rules as the mruby gem): a client session is
  * closed when it has no router left, a peer session that only connects when
@@ -393,7 +396,8 @@ typedef struct zrb_token zrb_token;
 struct zrb_session {
     z_owned_session_t session;
     pthread_mutex_t op_lock; /* calls made without the GVL, and close */
-    bool open;
+    bool open;      /* Ruby's view; changed only with the GVL held */
+    bool live;      /* the zenoh-c session exists; changed under op_lock */
     bool peer;      /* peer mode (otherwise client) */
     bool listening; /* peer mode with a listener: stays open without peers */
     zrb_sub *subs;  /* live subscribers and liveliness watches */
@@ -861,8 +865,8 @@ static void zrb_session_detach_all(zrb_session *z) {
 static void *zrb_session_close_nogvl(void *p) {
     zrb_session *z = (zrb_session *)p;
     pthread_mutex_lock(&z->op_lock);
-    if (z->open) {
-        z->open = false;
+    if (z->live) {
+        z->live = false;
         z_close(z_loan_mut(z->session), NULL);
         z_drop(z_move(z->session));
     }
@@ -875,6 +879,11 @@ static void zrb_session_shutdown(zrb_session *z, bool with_gvl_release) {
     if (!z->open) {
         return;
     }
+    /* Closed for Ruby before the GVL is released: another Ruby thread that
+     * runs while zenoh-c closes the session sees it closed and does not
+     * touch the session any more (the calls without the GVL check live
+     * under op_lock instead). */
+    z->open = false;
     if (with_gvl_release) {
         rb_thread_call_without_gvl(zrb_session_close_nogvl, z, RUBY_UBF_IO, NULL);
     } else {
@@ -1052,6 +1061,7 @@ static VALUE zrb_session_s_open(int argc, VALUE *argv, VALUE klass) {
         rb_raise(eZenohError, "cannot open a session to %s (%d)", locator != NULL ? locator : listen, (int)a.ret);
     }
     z->open = true;
+    z->live = true;
     z->peer = peer;
     z->listening = (listen != NULL);
     return obj;
@@ -1068,7 +1078,7 @@ typedef struct {
 static void *zrb_put_nogvl(void *p) {
     zrb_put_args *a = (zrb_put_args *)p;
     pthread_mutex_lock(&a->z->op_lock);
-    if (a->z->open) {
+    if (a->z->live) {
         a->ret = z_put(z_loan(a->z->session), z_loan(a->key), z_move(a->payload), &a->opts);
     } else {
         a->ret = Z_ESESSION_CLOSED;
@@ -1269,7 +1279,7 @@ typedef struct {
 static void *zrb_get_nogvl(void *p) {
     zrb_get_args *a = (zrb_get_args *)p;
     pthread_mutex_lock(&a->z->op_lock);
-    if (a->z->open) {
+    if (a->z->live) {
         if (a->liveliness) {
             a->ret = z_liveliness_get(z_loan(a->z->session), z_loan(a->key), z_move(a->cb), &a->lopts);
         } else {
