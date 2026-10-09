@@ -6,7 +6,7 @@
 #
 # What it adds on top of the C binding:
 # - the deprecation helper (Asterism.deprecated, Asterism.deprecations=),
-#   shared by every Asterism gem;
+#   shared by every Asterism gem, and Asterism.warn_once (lost replies);
 # - the time limit in seconds (timeout:) next to milliseconds (timeout_ms:)
 #   on get and liveliness_get, and keywords for the positional optionals;
 # - connection_count's old name peers, and the one-argument Query#reply
@@ -59,6 +59,26 @@ module Asterism
       puts(msg)
     end
     nil
+  end
+
+  # Warns msg once for obj (a Get, a watch, a wrapper): later calls for
+  # the same object say nothing. For losses the application did not ask
+  # for, such as replies dropped from a full queue. Returns true when it
+  # warned. Ruby's warn stays silent with $VERBOSE = nil.
+  def self.warn_once(obj, msg)
+    # By object_id: not every mruby build has instance_variable_get. The
+    # objects warned about are few; the table is emptied past 256.
+    @warned_once ||= {}
+    id = obj.object_id
+    return false if @warned_once[id]
+    @warned_once = {} if @warned_once.size >= 256
+    @warned_once[id] = true
+    if respond_to?(:warn, true)
+      warn(msg)
+    else
+      puts(msg)
+    end
+    true
   end
 
   # The names warned about so far (for tests). @api private
@@ -131,9 +151,12 @@ module Asterism
       alias_method :__asterism_liveliness_watch, :liveliness_watch
 
       # get(key, timeout: 2.0, params: nil, payload: nil, attachment: nil,
-      #     target: :all, consolidation: :none, ...) -> Get.
-      # timeout: seconds; or timeout_ms:. The old positional form
-      # get(key, timeout_ms, params, payload) still works (deprecated).
+      #     target: :all, consolidation: :none, depth: DEFAULT_GET_DEPTH,
+      #     ...) -> Get.
+      # timeout: seconds; or timeout_ms:. depth: the replies kept until
+      # taken (past it the oldest go; Get#dropped counts them). The old
+      # positional form get(key, timeout_ms, params, payload) still works
+      # (deprecated).
       def get(key, *args, timeout: nil, timeout_ms: nil, params: nil, payload: nil, **opts)
         raise ArgumentError, "get: wrong number of arguments (given #{args.size + 1}, expected 1..4)" if args.size > 3
         raise ArgumentError, "get: params given twice" if args.size > 1 && !params.nil?
@@ -144,25 +167,28 @@ module Asterism
         __asterism_get(key, ms, params, payload, **opts)
       end
 
-      # liveliness_get(key, timeout: 2.0) -> Get (or timeout_ms:).
-      def liveliness_get(key, *args, timeout: nil, timeout_ms: nil)
+      # liveliness_get(key, timeout: 2.0, depth: DEFAULT_GET_DEPTH) -> Get
+      # (or timeout_ms:).
+      def liveliness_get(key, *args, timeout: nil, timeout_ms: nil, depth: nil)
         raise ArgumentError, "liveliness_get: wrong number of arguments (given #{args.size + 1}, expected 1..2)" if args.size > 1
-        __asterism_liveliness_get(key, ::Asterism.time_ms("Session#liveliness_get", timeout, timeout_ms, args[0], 2000))
+        ms = ::Asterism.time_ms("Session#liveliness_get", timeout, timeout_ms, args[0], 2000)
+        __asterism_liveliness_get(key, ms, depth: depth.nil? ? DEFAULT_GET_DEPTH : depth)
       end
 
       # subscribe(key, depth = 16) or subscribe(key, depth: 16).
       def subscribe(key, *args, depth: nil)
-        __asterism_subscribe(key, ::Asterism.depth_of("subscribe", args, depth, 16))
+        __asterism_subscribe(key, ::Asterism.depth_of("subscribe", args, depth, DEFAULT_DEPTH))
       end
 
       # queryable(key, depth = 16, complete: false) or with depth:.
       def queryable(key, *args, depth: nil, **opts)
-        __asterism_queryable(key, ::Asterism.depth_of("queryable", args, depth, 16), **opts)
+        __asterism_queryable(key, ::Asterism.depth_of("queryable", args, depth, DEFAULT_DEPTH), **opts)
       end
 
-      # liveliness_watch(key, depth = 16) or with depth:.
+      # liveliness_watch(key, depth = DEFAULT_WATCH_DEPTH) or with depth:.
+      # The tokens alive when it is declared come in one burst.
       def liveliness_watch(key, *args, depth: nil)
-        __asterism_liveliness_watch(key, ::Asterism.depth_of("liveliness_watch", args, depth, 16))
+        __asterism_liveliness_watch(key, ::Asterism.depth_of("liveliness_watch", args, depth, DEFAULT_WATCH_DEPTH))
       end
 
       # Deprecated: the number of connections is connection_count.

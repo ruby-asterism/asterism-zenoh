@@ -58,7 +58,13 @@
 #include <zenoh.h>
 
 #define ZRB_DEFAULT_DEPTH 16
-#define ZRB_MAX_DEPTH 1024
+/* A get, a liveliness get and a liveliness watch hold every reply or token
+ * a router sends in one burst (a wildcard over a busy network). On a PC the
+ * queue costs nothing until it fills: zenoh-c's FIFO and the gem's lists
+ * grow as entries come. */
+#define ZRB_DEFAULT_GET_DEPTH 1024
+#define ZRB_DEFAULT_WATCH_DEPTH 1024
+#define ZRB_MAX_DEPTH 65536
 #define ZRB_DEFAULT_POLL_STEPS 8
 #define ZRB_DEFAULT_GET_TIMEOUT_MS 2000
 #define ZRB_MAX_GET_TIMEOUT_MS 600000
@@ -349,13 +355,15 @@ static void zrb_owned_key(z_owned_keyexpr_t *ke, const char *key) {
     }
 }
 
-static long zrb_check_depth(VALUE v) {
-    long depth = NIL_P(v) ? ZRB_DEFAULT_DEPTH : NUM2LONG(v);
+static long zrb_check_depth_or(VALUE v, long def) {
+    long depth = NIL_P(v) ? def : NUM2LONG(v);
     if (depth < 1 || depth > ZRB_MAX_DEPTH) {
         rb_raise(rb_eArgError, "depth must be 1..%d", ZRB_MAX_DEPTH);
     }
     return depth;
 }
+
+static long zrb_check_depth(VALUE v) { return zrb_check_depth_or(v, ZRB_DEFAULT_DEPTH); }
 
 static long zrb_check_timeout(VALUE v) {
     long t = NIL_P(v) ? ZRB_DEFAULT_GET_TIMEOUT_MS : NUM2LONG(v);
@@ -932,6 +940,7 @@ typedef struct {
     int accept_replies;
     VALUE target, consolidation, timeout;
     bool has_target, has_consolidation, has_timeout;
+    VALUE depth; /* gets: nil (the default) or the queue depth */
 } zrb_opts;
 
 static int zrb_priority_arg(VALUE v) {
@@ -1037,6 +1046,7 @@ static void zrb_opts_parse(VALUE hash, const char *const *names, int n, zrb_opts
     o->priority = o->congestion_control = o->express = o->reliability = o->destination = o->accept_replies = -1;
     o->target = o->consolidation = o->timeout = Qnil;
     o->has_target = o->has_consolidation = o->has_timeout = false;
+    o->depth = Qnil;
     if (NIL_P(hash)) {
         return;
     }
@@ -1098,6 +1108,8 @@ static void zrb_opts_parse(VALUE hash, const char *const *names, int n, zrb_opts
         } else if (strcmp(k, "timeout_ms") == 0) {
             o->timeout = v;
             o->has_timeout = true;
+        } else if (strcmp(k, "depth") == 0) {
+            o->depth = v;
         }
     }
 }
@@ -1940,10 +1952,12 @@ static zrb_get *zrb_get_get(VALUE self) {
     return g;
 }
 
-static VALUE zrb_get_new(zrb_get **out) {
+/* depth: how many replies wait to be taken; past it the oldest go (and
+ * are counted in dropped). */
+static VALUE zrb_get_new(long depth, zrb_get **out) {
     zrb_get *g;
     VALUE obj = TypedData_Make_Struct(cGet, zrb_get, &zrb_get_type, g);
-    g->ch = zch_new(ZCH_REPLY, ZRB_DEFAULT_DEPTH);
+    g->ch = zch_new(ZCH_REPLY, (uint32_t)depth);
     *out = g;
     return obj;
 }
@@ -2542,11 +2556,12 @@ static VALUE zrb_session_subscribe(int argc, VALUE *argv, VALUE self) {
     return zrb_sub_new(self, z, key_v, depth, false);
 }
 
-/* session.liveliness_watch(key, depth = 16) -> LivelinessWatch */
+/* session.liveliness_watch(key, depth = 1024) -> LivelinessWatch. The
+ * tokens alive when it is declared come in one burst. */
 static VALUE zrb_session_liveliness_watch(int argc, VALUE *argv, VALUE self) {
     VALUE key_v, depth_v = Qnil;
     rb_scan_args(argc, argv, "11", &key_v, &depth_v);
-    long depth = zrb_check_depth(depth_v);
+    long depth = zrb_check_depth_or(depth_v, ZRB_DEFAULT_WATCH_DEPTH);
     StringValueCStr(key_v);
     zrb_session *z = zrb_session_get_open(self);
     return zrb_sub_new(self, z, key_v, depth, true);
@@ -2674,20 +2689,22 @@ static VALUE zrb_run_get(VALUE self, zrb_session *z, zrb_get_args *a, VALUE obj,
     return obj;
 }
 
-static const char *const zrb_get_kw[] = {"attachment", "target", "consolidation", "encoding",
-                                         "priority", "congestion_control", "express", "accept_replies"};
+static const char *const zrb_get_kw[] = {"attachment", "target", "consolidation", "encoding", "priority",
+                                         "congestion_control", "express", "accept_replies", "depth"};
 
 /* session.get(key, timeout_ms = 2000, params = nil, payload = nil,
  *             attachment: nil, target: :all, consolidation: :none,
  *             encoding: nil, priority: nil, congestion_control: nil,
- *             express: nil, accept_replies: nil) -> Get.
+ *             express: nil, accept_replies: nil, depth: 1024) -> Get.
  * Returns at once; the replies come in on zenoh's threads. key: a String
- * or a KeyExpr. accept_replies: :matching_query (zenoh's default) or :any. */
+ * or a KeyExpr. accept_replies: :matching_query (zenoh's default) or :any.
+ * depth: the replies kept until taken (the oldest go past it; dropped). */
 static VALUE zrb_session_get_m(int argc, VALUE *argv, VALUE self) {
     VALUE key_v, timeout_v = Qnil, params_v = Qnil, payload = Qnil, opts = Qnil;
     rb_scan_args(argc, argv, "13:", &key_v, &timeout_v, &params_v, &payload, &opts);
     zrb_opts o;
-    zrb_opts_parse(opts, zrb_get_kw, 8, &o);
+    zrb_opts_parse(opts, zrb_get_kw, 9, &o);
+    long depth = zrb_check_depth_or(o.depth, ZRB_DEFAULT_GET_DEPTH);
     VALUE key_str = zrb_key_string(key_v);
     long timeout_ms = zrb_check_timeout(timeout_v);
     const char *params = NIL_P(params_v) ? NULL : StringValueCStr(params_v);
@@ -2703,7 +2720,7 @@ static VALUE zrb_session_get_m(int argc, VALUE *argv, VALUE self) {
     a.z = z;
     zrb_key_owned(key_v, &a.key);
     zrb_get *g;
-    VALUE obj = zrb_get_new(&g);
+    VALUE obj = zrb_get_new(depth, &g);
     z_get_options_default(&a.opts);
     a.opts.timeout_ms = (uint64_t)timeout_ms;
     a.opts.target = target;
@@ -2763,10 +2780,15 @@ static VALUE zrb_session_liveliness(VALUE self, VALUE key_v) {
     return obj;
 }
 
-/* session.liveliness_get(key, timeout_ms = 2000) -> Get */
+static const char *const zrb_lget_kw[] = {"depth"};
+
+/* session.liveliness_get(key, timeout_ms = 2000, depth: 1024) -> Get */
 static VALUE zrb_session_liveliness_get(int argc, VALUE *argv, VALUE self) {
-    VALUE key_v, timeout_v = Qnil;
-    rb_scan_args(argc, argv, "11", &key_v, &timeout_v);
+    VALUE key_v, timeout_v = Qnil, opts = Qnil;
+    rb_scan_args(argc, argv, "11:", &key_v, &timeout_v, &opts);
+    zrb_opts o;
+    zrb_opts_parse(opts, zrb_lget_kw, 1, &o);
+    long depth = zrb_check_depth_or(o.depth, ZRB_DEFAULT_GET_DEPTH);
     const char *key = StringValueCStr(key_v);
     long timeout_ms = zrb_check_timeout(timeout_v);
     zrb_session *z = zrb_session_get_open(self);
@@ -2777,7 +2799,7 @@ static VALUE zrb_session_liveliness_get(int argc, VALUE *argv, VALUE self) {
     a.liveliness = true;
     zrb_owned_key(&a.key, key);
     zrb_get *g;
-    VALUE obj = zrb_get_new(&g);
+    VALUE obj = zrb_get_new(depth, &g);
     z_liveliness_get_options_default(&a.lopts);
     a.lopts.timeout_ms = (uint64_t)timeout_ms;
     zch_closure_reply(g->ch, &a.cb);
@@ -3489,14 +3511,16 @@ static void *zrb_qget_nogvl(void *p) {
     return NULL;
 }
 
-static const char *const zrb_qget_kw[] = {"attachment", "encoding"};
+static const char *const zrb_qget_kw[] = {"attachment", "encoding", "depth"};
 
-/* querier.get(params = nil, payload = nil, attachment: nil, encoding: nil) -> Get */
+/* querier.get(params = nil, payload = nil, attachment: nil, encoding: nil,
+ *             depth: 1024) -> Get */
 static VALUE zrb_querier_get_m(int argc, VALUE *argv, VALUE self) {
     VALUE params_v = Qnil, payload = Qnil, opts = Qnil;
     rb_scan_args(argc, argv, "02:", &params_v, &payload, &opts);
     zrb_opts o;
-    zrb_opts_parse(opts, zrb_qget_kw, 2, &o);
+    zrb_opts_parse(opts, zrb_qget_kw, 3, &o);
+    long depth = zrb_check_depth_or(o.depth, ZRB_DEFAULT_GET_DEPTH);
     const char *params = NIL_P(params_v) ? NULL : StringValueCStr(params_v);
     if (!NIL_P(payload) && !RB_TYPE_P(payload, T_STRING)) {
         rb_raise(rb_eTypeError, "payload must be a String");
@@ -3510,7 +3534,7 @@ static VALUE zrb_querier_get_m(int argc, VALUE *argv, VALUE self) {
     z_internal_bytes_null(&a.att);
     z_internal_encoding_null(&a.enc);
     zrb_get *g;
-    VALUE obj = zrb_get_new(&g);
+    VALUE obj = zrb_get_new(depth, &g);
     z_querier_get_options_default(&a.opts);
     if (!NIL_P(payload)) {
         zrb_bytes_from_str(&a.payload, payload, "payload");
@@ -4113,6 +4137,13 @@ void Init_asterism_zenoh(void) {
     rb_define_const(mZenoh, "CONNECT_TIMEOUT_MS", INT2FIX(ZRB_CONNECT_TIMEOUT_MS));
     rb_define_const(mZenoh, "SEND_TIMEOUT_MS", INT2FIX(ZRB_SEND_TIMEOUT_MS));
     rb_define_const(mZenoh, "PEER", Qtrue);
+    /* Queue depths: the default of subscribe, queryable and the listeners;
+     * of get, liveliness_get and querier.get; of liveliness_watch; and the
+     * largest accepted. */
+    rb_define_const(mZenoh, "DEFAULT_DEPTH", INT2FIX(ZRB_DEFAULT_DEPTH));
+    rb_define_const(mZenoh, "DEFAULT_GET_DEPTH", INT2FIX(ZRB_DEFAULT_GET_DEPTH));
+    rb_define_const(mZenoh, "DEFAULT_WATCH_DEPTH", INT2FIX(ZRB_DEFAULT_WATCH_DEPTH));
+    rb_define_const(mZenoh, "MAX_DEPTH", INT2FIX(ZRB_MAX_DEPTH));
     rb_define_const(mZenoh, "MAX_PEERS", LONG2NUM(zrb_default_max_sessions()));
 
     id_attachment = rb_intern("attachment");

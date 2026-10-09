@@ -50,15 +50,15 @@ The same calls, arguments and results as the mruby / PicoRuby gem
 | `Session.open(locator = nil, mode: :client, listen: nil) { \|s\| }` | client of a router, or `mode: :peer` connecting to `locator` and/or listening on `listen:`. `Error` when nobody answers within `CONNECT_TIMEOUT_MS`. With a block: closes the session after it and returns the block's value. Releases the GVL while connecting |
 | `session.put(key, payload, attachment: nil)` | `payload` / `attachment` are Strings (bytes). Releases the GVL |
 | `session.subscribe(key, depth: 16)` -> `Subscriber` | `each_pending { \|key, payload, attachment\| }` (or an Array), `pending` / `received` / `dropped`, `close` / `closed?`. `depth` may also be positional |
-| `session.get(key, timeout: 2.0, params: nil, payload: nil, attachment: nil, target: :all, consolidation: :none)` -> `Get` | `timeout:` in seconds, or `timeout_ms:`. Returns at once; `each_reply { \|key, payload, attachment\| }`, `done?`, `pending` / `received` / `dropped` / `errors`. `consolidation: :none` (every reply) differs from zenoh's `:auto` on purpose: services and the object layer want every reply |
+| `session.get(key, timeout: 2.0, params: nil, payload: nil, attachment: nil, target: :all, consolidation: :none, depth: DEFAULT_GET_DEPTH)` -> `Get` | `timeout:` in seconds, or `timeout_ms:`. `depth:` the replies kept until taken (see Queue depths). Returns at once; `each_reply { \|key, payload, attachment\| }`, `done?`, `pending` / `received` / `dropped` / `errors`. `consolidation: :none` (every reply) differs from zenoh's `:auto` on purpose: services and the object layer want every reply |
 | `session.queryable(key, depth: 16, complete: false)` -> `Queryable` | `each_pending { \|q\| }` (each query finished after the block) or an Array of `Query` |
 | `q.key` / `params` / `payload` / `attachment`, `q.reply(key, payload, attachment: nil)`, `q.finish` / `finished?` | `q.reply(payload)` answers on the query's key (see Deprecations) |
 | `session.liveliness(key)` -> `LivelinessToken` | `close` / `closed?` |
-| `session.liveliness_watch(key, depth: 16)` -> `LivelinessWatch` | `each_pending { \|key, alive\| }`; the tokens alive now come first |
-| `session.liveliness_get(key, timeout: 2.0)` -> `Get` | or `timeout_ms:` |
+| `session.liveliness_watch(key, depth: DEFAULT_WATCH_DEPTH)` -> `LivelinessWatch` | `each_pending { \|key, alive\| }`, `pending` / `received` / `dropped`; the tokens alive now come first, in one burst |
+| `session.liveliness_get(key, timeout: 2.0, depth: DEFAULT_GET_DEPTH)` -> `Get` | or `timeout_ms:` |
 | `session.poll(steps = 8)` / `closed?` / `close` / `zid` / `connection_count` | `connection_count`: the routers (client) or peers (peer mode) connected now |
 | `Asterism::Error` > `Asterism::Zenoh::Error` > `Asterism::Zenoh::ClosedError` | `ClosedError`: the session is closed or its connection was lost. `Error#code`: zenoh-c's result code when there was one |
-| `CONNECT_TIMEOUT_MS`, `SEND_TIMEOUT_MS` (3000), `PEER` / `PEER_SUPPORTED` (true), `MAX_PEERS`, `BACKEND` (`:zenoh_c`), `BACKEND_VERSION` (= `C_VERSION`), `DEFAULT_TIMEOUT` (2.0 s), `VERSION` | `MAX_PEERS` is zenoh-c's `transport/unicast/max_sessions` (1000); on the boards `BACKEND` is `:zenoh_pico` |
+| `CONNECT_TIMEOUT_MS`, `SEND_TIMEOUT_MS` (3000), `PEER` / `PEER_SUPPORTED` (true), `MAX_PEERS`, `BACKEND` (`:zenoh_c`), `BACKEND_VERSION` (= `C_VERSION`), `DEFAULT_TIMEOUT` (2.0 s), `DEFAULT_DEPTH` (16), `DEFAULT_GET_DEPTH` / `DEFAULT_WATCH_DEPTH` (1024), `MAX_DEPTH` (65536), `VERSION` | `MAX_PEERS` is zenoh-c's `transport/unicast/max_sessions` (1000); on the boards `BACKEND` is `:zenoh_pico` |
 | `Asterism.deprecations = :warn / :raise / :silent` | how deprecated calls are reported (below) |
 
 Units: a keyword without a unit suffix is seconds (`timeout:`,
@@ -80,7 +80,7 @@ Every 0.2.0 call works as before; these are new keywords and methods.
 | `session.put(key, payload, attachment:, encoding:, priority:, congestion_control:, express:, reliability:, timestamp:, allowed_destination:)` | `priority:` `:real_time` .. `:background` (or 1..7), `congestion_control:` `:drop` / `:block` / `:block_first`, `reliability:` `:reliable` / `:best_effort`, `timestamp:` `true` or a `Timestamp`, `allowed_destination:` `:any` / `:remote` / `:session_local` |
 | `session.delete(key, ...)` | the same options without payload, attachment and encoding |
 | `session.publisher(key, encoding:, priority:, ...)` -> `Publisher` | `put(payload, attachment:, encoding:, timestamp:)`, `delete(timestamp:)`, `matching?`, `matching_listener(depth: 16)`, `close` / `closed?` |
-| `session.querier(key, target:, consolidation:, timeout: 2.0, ...)` -> `Querier` | `timeout:` seconds or `timeout_ms:`; `get(params: nil, payload: nil, attachment:, encoding:)` -> `Get`, `matching?`, `matching_listener`, `close` |
+| `session.querier(key, target:, consolidation:, timeout: 2.0, ...)` -> `Querier` | `timeout:` seconds or `timeout_ms:`; `get(params: nil, payload: nil, attachment:, encoding:, depth:)` -> `Get`, `matching?`, `matching_listener`, `close` |
 | `sub.each_sample { \|sample\| }` | `Sample` (`key`, `payload`, `attachment`, `kind`, `encoding`, `timestamp`, `priority`, `congestion_control`, `express`, `reliability`, `source_zid`); same queue as `each_pending` |
 | `get.each_result { \|reply\| }` | `Reply` (`ok?` / `error?`, `key`, `payload`, `encoding`, `kind`, `timestamp`, `replier_zid`); error replies included. `each_reply` still leaves them out |
 | `session.get(..., encoding:, priority:, congestion_control:, express:, accept_replies:)` | |
@@ -189,6 +189,27 @@ thread and Enumerators on top of this API are in the CRuby layer of the
   true, and `put` raises `Asterism::Zenoh::Error`. No reconnection.
 - **Full queues drop the oldest** entry and count it in `dropped` (a dropped
   query is finished, so its requester gets no answer from it).
+
+### Queue depths
+
+Every receiving object has a bounded queue; what does not fit is dropped,
+oldest first, and counted in `dropped`. A router answers a wildcard get or
+liveliness get, and a new liveliness watch, with everything at once, so
+those queues are deep by default:
+
+| | CRuby (zenoh-c) | Boards (zenoh-pico) |
+|---|---|---|
+| `subscribe`, `queryable`, listeners (`DEFAULT_DEPTH`) | 16 | 16 |
+| `get`, `liveliness_get`, `querier.get` (`DEFAULT_GET_DEPTH`) | 1024 | 16 |
+| `liveliness_watch` (`DEFAULT_WATCH_DEPTH`) | 1024 | 16 |
+| largest `depth:` (`MAX_DEPTH`) | 65536 | 1024 |
+
+On a PC a deep queue costs nothing until it fills (zenoh-c's FIFO and the
+gem's lists grow as entries come). On a board a get's queue is allocated
+when the get is sent; pass `depth:` when a wildcard can match more than 16
+answers. Check `dropped` after a get whose answers matter; the asterism
+gem's CRuby API warns once when one of its gets or watches dropped
+something (`Asterism.warn_once`).
 
 Differences: `C_VERSION` instead of `PICO_VERSION`; `MAX_PEERS` is zenoh-c's
 limit, not 3; the time limits of gets are kept by zenoh-c (exact, not

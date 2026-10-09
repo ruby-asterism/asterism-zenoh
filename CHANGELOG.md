@@ -22,6 +22,14 @@ Added
   `depth:` on `subscribe`, `queryable`, `liveliness_watch`,
   `advanced_subscriber`, the listeners and the event streams, and
   `Querier#get(params:, payload:)`.
+- `depth:` on `get`, `liveliness_get` and `Querier#get`: the replies kept
+  until taken. Before, a get's queue held 16 and could not be changed, so
+  the replies to a wildcard past the 16th were dropped (a router answers
+  in one burst; `liveliness_get("@ros2_lv/**")` returned 16 of 31).
+- `DEFAULT_DEPTH` (16), `DEFAULT_GET_DEPTH`, `DEFAULT_WATCH_DEPTH` and
+  `MAX_DEPTH`.
+- `Asterism.warn_once(obj, message)`: warns once per object (the asterism
+  gem uses it for gets and watches that dropped something).
 - `Session#connection_count` (the routers of a client session, or the peers
   of a peer session).
 - One error tree: `Asterism::Error` (defined here, reopened by the asterism
@@ -41,6 +49,13 @@ Added
 - `Asterism.deprecated` and `Asterism.deprecations = :warn / :raise /
   :silent` (also `ASTERISM_DEPRECATIONS`): the one helper every Asterism
   gem uses to warn once per name.
+
+Changed
+
+- The default queue depth of `get`, `liveliness_get`, `Querier#get` and
+  `liveliness_watch` is 1024 (was 16), so a burst of replies or of live
+  tokens is kept whole. The largest `depth:` is 65536 (was 1024). The
+  queues grow as entries come, so a deep one costs nothing while empty.
 
 Deprecated (each warns once; removed or changed in 1.0)
 

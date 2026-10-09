@@ -89,7 +89,7 @@ module Asterism
       prepend MatchingDepth
       alias_method :__asterism_get, :get
 
-      # get(params: nil, payload: nil, attachment:, encoding:) -> Get; the
+      # get(params: nil, payload: nil, attachment:, encoding:, depth:) -> Get; the
       # positional get(params, payload) still works.
       def get(*args, params: nil, payload: nil, **opts)
         raise ArgumentError, "get: wrong number of arguments (given #{args.size}, expected 0..2)" if args.size > 2
