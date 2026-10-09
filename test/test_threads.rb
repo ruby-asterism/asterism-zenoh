@@ -24,9 +24,9 @@ class TestZenohThreads < Minitest::Test
         -> { qr.get.each_result },
         -> { user.delete("c5/race/x") },
         -> { user.put("c5/race/x", "y" * 64) },
-        -> { user.poll && user.peers },
+        -> { user.poll && user.connection_count },
         -> { user.liveliness("c5/race/t#{rand(1000)}").close },
-        -> { user.get("c5/race/q", 50).each_reply },
+        -> { user.get("c5/race/q", timeout_ms: 50).each_reply },
         -> { sub.each_pending }
       ]
       stop = false

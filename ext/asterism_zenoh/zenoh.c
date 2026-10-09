@@ -43,11 +43,13 @@
  * undeclared or the get is finished); whichever lets go last frees it.
  */
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <ruby.h>
 #include <ruby/encoding.h>
@@ -64,13 +66,13 @@
 #define ZRB_CONNECT_TIMEOUT_MS 3000
 #define ZRB_SEND_TIMEOUT_MS 3000
 
-static VALUE mAsterism, mZenoh, eZenohError;
+static VALUE mAsterism, mZenoh, eAsterismError, eZenohError, eClosedError;
 static VALUE cSession, cSubscriber, cWatch, cQueryable, cQuery, cGet, cToken;
 static VALUE cAdvSubscriber, cPublisher, cAdvPublisher, cQuerier, cKeyExpr, cTimestamp;
 static VALUE cMatchingListener, cEventListener;
 static ID id_attachment, id_target, id_consolidation, id_complete, id_mode, id_listen;
 static ID id_config, id_config_file, id_scouting, id_history, id_new;
-static ID id_iv_session, id_iv_key, id_iv_parent;
+static ID id_iv_session, id_iv_key, id_iv_parent, id_iv_code, id_iv_qkey;
 static ID id_client, id_peer, id_router, id_all, id_all_complete, id_best_matching;
 static ID id_none, id_latest, id_monotonic, id_auto;
 
@@ -407,6 +409,22 @@ static void zrb_hold_session(VALUE obj, VALUE session, VALUE key) {
     }
 }
 
+/* Raises klass with the zenoh-c result code as the exception's code
+ * (Asterism::Zenoh::Error#code) as well as in the message. */
+#ifdef RBIMPL_ATTR_FORMAT
+RBIMPL_ATTR_FORMAT(RBIMPL_PRINTF_FORMAT, 3, 4)
+#endif
+NORETURN(static void zrb_raise_code(VALUE klass, int code, const char *fmt, ...));
+static void zrb_raise_code(VALUE klass, int code, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    VALUE msg = rb_vsprintf(fmt, ap);
+    va_end(ap);
+    VALUE exc = rb_exc_new_str(klass, msg);
+    rb_ivar_set(exc, id_iv_code, INT2NUM(code));
+    rb_exc_raise(exc);
+}
+
 /* ------------------------------------------------------- object structs */
 
 typedef struct zrb_session zrb_session;
@@ -441,6 +459,7 @@ struct zrb_session {
     zrb_qable *qables;
     zrb_token *tokens;
     zrb_ent *ents;  /* the rest (0.3.0) */
+    pid_t pid;      /* the process that opened it (zenoh-c's threads do not survive fork) */
 };
 
 typedef enum { ZSUB_PLAIN, ZSUB_LIVELINESS, ZSUB_ADVANCED } zsub_type;
@@ -1670,6 +1689,9 @@ static VALUE zrb_query_yield_ensure(VALUE obj) {
 static VALUE zrb_qable_each_pending(VALUE self) {
     zrb_qable *q = zrb_qable_get(self);
     bool collect = !rb_block_given_p();
+    /* The queryable's own key goes with each query (Query#reply with one
+     * argument looks at it). */
+    VALUE qkey = rb_attr_get(self, id_iv_key);
     VALUE out = collect ? rb_ary_new() : Qnil;
     long taken = 0;
     unsigned todo = atomic_load(&q->ch->queued);
@@ -1680,6 +1702,9 @@ static VALUE zrb_qable_each_pending(VALUE self) {
             break;
         }
         VALUE obj = zrb_query_wrap(&oq);
+        if (!NIL_P(qkey)) {
+            rb_ivar_set(obj, id_iv_qkey, qkey);
+        }
         taken++;
         if (collect) {
             rb_ary_push(out, obj);
@@ -1806,7 +1831,7 @@ static VALUE zrb_query_reply(int argc, VALUE *argv, VALUE self) {
     zrb_bytes_from_str(&bytes, payload, "payload");
     z_result_t ret = z_query_reply(z_loan(zq->query), kp, z_move(bytes), &ro);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "reply failed (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "reply failed (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
     }
     return Qnil;
 }
@@ -1833,7 +1858,7 @@ static VALUE zrb_query_reply_err(int argc, VALUE *argv, VALUE self) {
     zrb_bytes_from_str(&bytes, payload, "payload");
     z_result_t ret = z_query_reply_err(z_loan(zq->query), z_move(bytes), &eo);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "reply_err failed (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "reply_err failed (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
     }
     return Qnil;
 }
@@ -1876,7 +1901,7 @@ static VALUE zrb_query_reply_del(int argc, VALUE *argv, VALUE self) {
     }
     z_result_t ret = z_query_reply_del(z_loan(zq->query), kp, &d);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "reply_del failed (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "reply_del failed (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
     }
     return Qnil;
 }
@@ -2084,6 +2109,12 @@ static void *zrb_session_close_nogvl(void *p) {
 }
 
 static void zrb_session_shutdown(zrb_session *z, bool with_gvl_release) {
+    if (z->open && z->pid != getpid()) {
+        /* Opened before a fork: zenoh-c's threads are in the parent. Leave
+         * the session to it; only this process's view is closed. */
+        z->open = false;
+        return;
+    }
     zrb_session_detach_all(z);
     if (!z->open) {
         return;
@@ -2142,6 +2173,9 @@ static bool zrb_session_check_link(zrb_session *z) {
     if (!z->open) {
         return true;
     }
+    if (z->pid != getpid()) {
+        return true;
+    }
     if (z_session_is_closed(z_loan(z->session))) {
         zrb_session_shutdown(z, true);
         return true;
@@ -2158,8 +2192,12 @@ static bool zrb_session_check_link(zrb_session *z) {
 
 static zrb_session *zrb_session_get_open(VALUE self) {
     zrb_session *z = zrb_session_get(self);
+    if (z->open && z->pid != getpid()) {
+        rb_raise(eClosedError, "the session was opened in process %ld; open a new session after fork",
+                 (long)z->pid);
+    }
     if (zrb_session_check_link(z)) {
-        rb_raise(eZenohError, "session is closed");
+        rb_raise(eClosedError, "session is closed");
     }
     return z;
 }
@@ -2441,13 +2479,14 @@ static VALUE zrb_session_s_open(int argc, VALUE *argv, VALUE klass) {
 
     rb_thread_call_without_gvl(zrb_open_nogvl, &a, RUBY_UBF_IO, NULL);
     if (a.ret != Z_OK) {
-        rb_raise(eZenohError, "cannot open a session to %s (%d)%" PRIsVALUE,
+        zrb_raise_code(eZenohError, (int)a.ret, "cannot open a session to %s (%d)%" PRIsVALUE,
                  locator != NULL ? locator : (listen != NULL ? listen : "the configured endpoints"), (int)a.ret,
                  zrb_last_error());
     }
     z->open = true;
     z->live = true;
     z->peer = peer;
+    z->pid = getpid();
     /* A peer that listens (or finds the others by scouting) stays open
      * without peers; one that only connects closes when it has none. */
     z->listening = peer && (is_router || listens || scouts);
@@ -2483,7 +2522,7 @@ static VALUE zrb_sub_new(VALUE self, zrb_session *z, VALUE key_v, long depth, bo
         ret = z_declare_subscriber(z_loan(z->session), &s->u.sub, z_loan(ke), z_move(cb), &so);
     }
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot subscribe to %s (%d)%" PRIsVALUE, key, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot subscribe to %s (%d)%" PRIsVALUE, key, (int)ret, zrb_last_error());
     }
     s->declared = true;
     s->owner = z;
@@ -2541,7 +2580,7 @@ static VALUE zrb_session_queryable(int argc, VALUE *argv, VALUE self) {
     qo.allowed_origin = Z_LOCALITY_REMOTE;
     z_result_t ret = z_declare_queryable(z_loan(z->session), &q->qable, z_loan(ke), z_move(cb), &qo);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a queryable on %s (%d)%" PRIsVALUE, key, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot declare a queryable on %s (%d)%" PRIsVALUE, key, (int)ret, zrb_last_error());
     }
     q->declared = true;
     q->owner = z;
@@ -2626,10 +2665,10 @@ static VALUE zrb_run_get(VALUE self, zrb_session *z, zrb_get_args *a, VALUE obj,
     z_drop(z_move(a->key));
     free(a->params);
     if (zrb_session_check_link(z)) {
-        rb_raise(eZenohError, "%s failed: the connection is lost (%d)", what, (int)a->ret);
+        zrb_raise_code(eClosedError, (int)a->ret, "%s failed: the connection is lost (%d)", what, (int)a->ret);
     }
     if (a->ret != Z_OK) {
-        rb_raise(eZenohError, "%s failed (%d)", what, (int)a->ret);
+        zrb_raise_code(eZenohError, (int)a->ret, "%s failed (%d)", what, (int)a->ret);
     }
     zrb_hold_session(obj, self, key_v);
     return obj;
@@ -2714,7 +2753,7 @@ static VALUE zrb_session_liveliness(VALUE self, VALUE key_v) {
     VALUE obj = TypedData_Make_Struct(cToken, zrb_token, &zrb_token_type, t);
     z_result_t ret = z_liveliness_declare_token(z_loan(z->session), &t->token, z_loan(ke), NULL);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a liveliness token on %s (%d)%" PRIsVALUE, key, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot declare a liveliness token on %s (%d)%" PRIsVALUE, key, (int)ret, zrb_last_error());
     }
     t->declared = true;
     t->owner = z;
@@ -2778,8 +2817,9 @@ static VALUE zrb_session_zid(VALUE self) {
     return out;
 }
 
-/* session.peers -> Integer: connected peers (peer mode), or routers (1
- * normally) for a client session; 0 once closed. */
+/* session.connection_count -> Integer: connected peers (peer mode), or
+ * routers (1 normally) for a client session; 0 once closed. (peers, its
+ * old name, is defined in Ruby with a deprecation warning.) */
 static VALUE zrb_session_peers(VALUE self) {
     zrb_session *z = zrb_session_get(self);
     if (zrb_session_check_link(z)) {
@@ -2901,13 +2941,13 @@ static void zrb_send_run(zrb_send *s, const char *what) {
     z_drop(z_move(s->att));
     z_drop(z_move(s->enc));
     if (zrb_session_check_link(s->z)) {
-        rb_raise(eZenohError, "%s failed: the connection is lost (%d)", what, (int)s->ret);
+        zrb_raise_code(eClosedError, (int)s->ret, "%s failed: the connection is lost (%d)", what, (int)s->ret);
     }
     if (s->undeclared) {
         rb_raise(eZenohError, "%s failed: the publisher is closed", what);
     }
     if (s->ret != Z_OK) {
-        rb_raise(eZenohError, "%s failed (%d)", what, (int)s->ret);
+        zrb_raise_code(eZenohError, (int)s->ret, "%s failed (%d)", what, (int)s->ret);
     }
 }
 
@@ -3059,7 +3099,7 @@ static zrb_pub *zrb_pub_get_open(VALUE self) {
         rb_raise(eZenohError, "the publisher is closed");
     }
     if (zrb_session_check_link(p->ent.owner)) {
-        rb_raise(eZenohError, "session is closed");
+        rb_raise(eClosedError, "session is closed");
     }
     return p;
 }
@@ -3153,7 +3193,7 @@ static VALUE zrb_session_publisher(int argc, VALUE *argv, VALUE self) {
     }
     z_result_t ret = z_declare_publisher(z_loan(z->session), &p->u.p, ke, &po);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a publisher on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot declare a publisher on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
     }
     return zrb_pub_wrap(self, z, p, obj, key_str);
 }
@@ -3259,7 +3299,7 @@ static VALUE zrb_session_advanced_publisher(int argc, VALUE *argv, VALUE self) {
     }
     z_result_t ret = ze_declare_advanced_publisher(z_loan(z->session), &p->u.a, ke, &ao);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot declare an advanced publisher on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot declare an advanced publisher on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
     }
     return zrb_pub_wrap(self, z, p, obj, key_str);
 }
@@ -3326,7 +3366,7 @@ static VALUE zrb_pub_matching_p(VALUE self) {
     z_result_t r = p->advanced ? ze_advanced_publisher_get_matching_status(z_loan(p->u.a), &st)
                                : z_publisher_get_matching_status(z_loan(p->u.p), &st);
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot get the matching status (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot get the matching status (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     return st.matching ? Qtrue : Qfalse;
 }
@@ -3370,7 +3410,7 @@ static zrb_querier *zrb_querier_get_open(VALUE self) {
         rb_raise(eZenohError, "the querier is closed");
     }
     if (zrb_session_check_link(q->ent.owner)) {
-        rb_raise(eZenohError, "session is closed");
+        rb_raise(eClosedError, "session is closed");
     }
     return q;
 }
@@ -3415,7 +3455,7 @@ static VALUE zrb_session_querier(int argc, VALUE *argv, VALUE self) {
     VALUE obj = TypedData_Make_Struct(cQuerier, zrb_querier, &zrb_querier_type, q);
     z_result_t ret = z_declare_querier(z_loan(z->session), &q->q, ke, &qo);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a querier on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot declare a querier on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
     }
     zrb_ent_link(&q->ent, z, ZENT_ENTITY, true, zrb_querier_undeclare);
     zrb_hold_session(obj, self, key_str);
@@ -3493,13 +3533,13 @@ static VALUE zrb_querier_get_m(int argc, VALUE *argv, VALUE self) {
     z_drop(z_move(a.att));
     z_drop(z_move(a.enc));
     if (zrb_session_check_link(a.z)) {
-        rb_raise(eZenohError, "get failed: the connection is lost (%d)", (int)a.ret);
+        zrb_raise_code(eClosedError, (int)a.ret, "get failed: the connection is lost (%d)", (int)a.ret);
     }
     if (a.undeclared) {
         rb_raise(eZenohError, "get failed: the querier is closed");
     }
     if (a.ret != Z_OK) {
-        rb_raise(eZenohError, "get failed (%d)", (int)a.ret);
+        zrb_raise_code(eZenohError, (int)a.ret, "get failed (%d)", (int)a.ret);
     }
     rb_ivar_set(obj, id_iv_session, rb_ivar_get(self, id_iv_session));
     return obj;
@@ -3510,7 +3550,7 @@ static VALUE zrb_querier_matching_p(VALUE self) {
     z_matching_status_t st = {false};
     z_result_t r = z_querier_get_matching_status(z_loan(q->q), &st);
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot get the matching status (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot get the matching status (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     return st.matching ? Qtrue : Qfalse;
 }
@@ -3618,7 +3658,7 @@ static VALUE zrb_pub_matching_listener(int argc, VALUE *argv, VALUE self) {
                        ? ze_advanced_publisher_declare_matching_listener(z_loan(p->u.a), &l->u.m, z_move(cb))
                        : z_publisher_declare_matching_listener(z_loan(p->u.p), &l->u.m, z_move(cb));
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a matching listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot declare a matching listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     zrb_lst_linked(obj, l, p->ent.owner, self);
     return obj;
@@ -3634,7 +3674,7 @@ static VALUE zrb_querier_matching_listener(int argc, VALUE *argv, VALUE self) {
     z_closure_matching_status(&cb, zev_on_matching, zevq_on_drop, zevq_ref(l->q));
     z_result_t r = z_querier_declare_matching_listener(z_loan(q->q), &l->u.m, z_move(cb));
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a matching listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot declare a matching listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     zrb_lst_linked(obj, l, q->ent.owner, self);
     return obj;
@@ -3666,7 +3706,7 @@ static VALUE zrb_session_transport_events(int argc, VALUE *argv, VALUE self) {
     to.history = history;
     z_result_t r = z_declare_transport_events_listener(z_loan(z->session), &l->u.t, z_move(cb), &to);
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a transport events listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot declare a transport events listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     zrb_lst_linked(obj, l, z, self);
     return obj;
@@ -3689,7 +3729,7 @@ static VALUE zrb_session_link_events(int argc, VALUE *argv, VALUE self) {
     lo.history = history;
     z_result_t r = z_declare_link_events_listener(z_loan(z->session), &l->u.l, z_move(cb), &lo);
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a link events listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot declare a link events listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     zrb_lst_linked(obj, l, z, self);
     return obj;
@@ -3777,7 +3817,7 @@ static VALUE zrb_session_advanced_subscriber(int argc, VALUE *argv, VALUE self) 
     zch_closure_sample(s->ch, &cb);
     z_result_t ret = ze_declare_advanced_subscriber(z_loan(z->session), &s->u.adv, ke, z_move(cb), &ao);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot declare an advanced subscriber on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot declare an advanced subscriber on %" PRIsVALUE " (%d)%" PRIsVALUE, key_str, (int)ret, zrb_last_error());
     }
     s->declared = true;
     s->owner = z;
@@ -3793,7 +3833,7 @@ static zrb_sub *zrb_advsub_get_open(VALUE self) {
         rb_raise(eZenohError, "the subscriber is closed");
     }
     if (zrb_session_check_link(s->owner)) {
-        rb_raise(eZenohError, "session is closed");
+        rb_raise(eClosedError, "session is closed");
     }
     return s;
 }
@@ -3811,7 +3851,7 @@ static VALUE zrb_advsub_miss_listener(int argc, VALUE *argv, VALUE self) {
     ze_closure_miss(&cb, zev_on_miss, zevq_on_drop, zevq_ref(l->q));
     z_result_t r = ze_advanced_subscriber_declare_sample_miss_listener(z_loan(s->u.adv), &l->u.s, z_move(cb));
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot declare a sample miss listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot declare a sample miss listener (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     zrb_lst_linked(obj, l, s->owner, self);
     return obj;
@@ -3842,7 +3882,7 @@ static VALUE zrb_advsub_detect_publishers(int argc, VALUE *argv, VALUE self) {
     lo.history = history;
     z_result_t ret = ze_advanced_subscriber_detect_publishers(z_loan(as->u.adv), &s->u.sub, z_move(cb), &lo);
     if (ret != Z_OK) {
-        rb_raise(eZenohError, "cannot detect publishers (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)ret, "cannot detect publishers (%d)%" PRIsVALUE, (int)ret, zrb_last_error());
     }
     s->declared = true;
     s->owner = as->owner;
@@ -3970,7 +4010,7 @@ static VALUE zrb_session_declare_keyexpr(VALUE self, VALUE key_v) {
     z_internal_keyexpr_null(&k->decl);
     z_result_t r = z_declare_keyexpr(z_loan(z->session), &k->decl, ke);
     if (r != Z_OK) {
-        rb_raise(eZenohError, "cannot declare the key expression (%d)%" PRIsVALUE, (int)r, zrb_last_error());
+        zrb_raise_code(eZenohError, (int)r, "cannot declare the key expression (%d)%" PRIsVALUE, (int)r, zrb_last_error());
     }
     zrb_ent_link(&k->ent, z, ZENT_KEYEXPR, true, zrb_ke_undeclare);
     rb_ivar_set(obj, id_iv_session, self);
@@ -4032,7 +4072,7 @@ static VALUE zrb_s_scout(VALUE mod, VALUE what_v, VALUE timeout_v, VALUE config_
     VALUE out = zevq_each_pending_noblock(q, false);
     zevq_unref(q);
     if (a.ret != Z_OK) {
-        rb_raise(eZenohError, "scouting failed (%d)", (int)a.ret);
+        zrb_raise_code(eZenohError, (int)a.ret, "scouting failed (%d)", (int)a.ret);
     }
     return out;
 }
@@ -4063,7 +4103,12 @@ void Init_asterism_zenoh(void) {
     /* Asterism::Zenoh. No top-level Zenoh (require "asterism/zenoh/global"). */
     mAsterism = rb_define_module("Asterism");
     mZenoh = rb_define_module_under(mAsterism, "Zenoh");
-    eZenohError = rb_define_class_under(mZenoh, "Error", rb_eStandardError);
+    /* The root of every Asterism error. Defined here because this binding
+     * loads first; the asterism gem reopens it (same superclass). */
+    eAsterismError = rb_define_class_under(mAsterism, "Error", rb_eStandardError);
+    eZenohError = rb_define_class_under(mZenoh, "Error", eAsterismError);
+    /* The session is closed, or its connection was lost. */
+    eClosedError = rb_define_class_under(mZenoh, "ClosedError", eZenohError);
     rb_define_const(mZenoh, "C_VERSION", rb_str_freeze(rb_str_new_cstr(ZENOH_C)));
     rb_define_const(mZenoh, "CONNECT_TIMEOUT_MS", INT2FIX(ZRB_CONNECT_TIMEOUT_MS));
     rb_define_const(mZenoh, "SEND_TIMEOUT_MS", INT2FIX(ZRB_SEND_TIMEOUT_MS));
@@ -4078,6 +4123,8 @@ void Init_asterism_zenoh(void) {
     id_listen = rb_intern("listen");
     id_iv_session = rb_intern("@session");
     id_iv_key = rb_intern("@key");
+    id_iv_code = rb_intern("@code");
+    id_iv_qkey = rb_intern("@asterism_queryable_key");
     id_iv_parent = rb_intern("@parent");
     id_config = rb_intern("config");
     id_config_file = rb_intern("config_file");
@@ -4119,7 +4166,7 @@ void Init_asterism_zenoh(void) {
     rb_define_method(cSession, "liveliness_watch", zrb_session_liveliness_watch, -1);
     rb_define_method(cSession, "liveliness_get", zrb_session_liveliness_get, -1);
     rb_define_method(cSession, "poll", zrb_session_poll, -1);
-    rb_define_method(cSession, "peers", zrb_session_peers, 0);
+    rb_define_method(cSession, "connection_count", zrb_session_peers, 0);
     rb_define_method(cSession, "zid", zrb_session_zid, 0);
     rb_define_method(cSession, "closed?", zrb_session_closed_p, 0);
     rb_define_method(cSession, "close", zrb_session_close, 0);

@@ -25,6 +25,11 @@ on:
 permissions:
   contents: read
 
+# Deprecated calls raise (test/helper.rb sets the same), so neither the gem
+# nor its tests use an old form by accident.
+env:
+  ASTERISM_DEPRECATIONS: raise
+
 jobs:
   test:
     name: test (${{ matrix.os }}, Ruby ${{ matrix.ruby }})

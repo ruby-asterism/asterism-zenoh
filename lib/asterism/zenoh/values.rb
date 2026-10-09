@@ -26,6 +26,7 @@ module Asterism
 
       def put? = kind == :put
       def delete? = kind == :delete
+      def express? = express
 
       def to_s
         "#{key}: #{payload}"
@@ -59,22 +60,28 @@ module Asterism
     Hello = Data.define(:zid, :whatami, :locators)
 
     # A connection to another peer or router (Session#transports).
-    Transport = Data.define(:zid, :whatami, :qos, :multicast)
+    Transport = Data.define(:zid, :whatami, :qos, :multicast) do
+      def multicast? = multicast
+    end
 
     # A transport that appeared (kind :added) or went (:removed), from
     # Session#transport_events.
     TransportEvent = Data.define(:kind, :zid, :whatami, :qos, :multicast) do
+      def multicast? = multicast
       def added? = kind == :added
       def removed? = kind == :removed
     end
 
     # A link (one connection of a transport; Session#links).
-    Link = Data.define(:zid, :src, :dst, :mtu, :streamed, :reliability, :interfaces, :group, :auth_identifier)
+    Link = Data.define(:zid, :src, :dst, :mtu, :streamed, :reliability, :interfaces, :group, :auth_identifier) do
+      def streamed? = streamed
+    end
 
     # A link that opened (kind :added) or closed (:removed), from
     # Session#link_events.
     LinkEvent = Data.define(:kind, :zid, :src, :dst, :mtu, :streamed, :reliability, :interfaces, :group,
                             :auth_identifier) do
+      def streamed? = streamed
       def added? = kind == :added
       def removed? = kind == :removed
     end
@@ -87,18 +94,18 @@ module Asterism
     SCOUT_WHAT = { router: 1, peer: 2, client: 4 }.freeze
 
     # Looks for routers and / or peers by multicast scouting for timeout
-    # seconds (or timeout_ms milliseconds) and returns what answered, as an
-    # Array of Hello. what: :router, :peer, :client, an Array of them, or
+    # seconds (or timeout_ms milliseconds; not both) and returns what
+    # answered, as an Array of Hello. what: :router, :peer, :client, an Array of them, or
     # :all. config: a Hash of zenoh configuration keys, as for
     # Session.open (e.g. {"scouting/multicast/interface" => "eth0"}).
     # Multicast must be allowed on the network (it often is not in
     # containers and VPNs).
-    def self.scout(what: %i[router peer], timeout: 1.0, timeout_ms: nil, config: nil)
+    def self.scout(what: %i[router peer], timeout: nil, timeout_ms: nil, config: nil)
       kinds = what == :all ? SCOUT_WHAT.keys : Array(what)
       mask = kinds.sum do |k|
         SCOUT_WHAT.fetch(k.to_sym) { raise ArgumentError, "what must be :router, :peer, :client or :all" }
       end
-      ms = timeout_ms || (timeout * 1000).round
+      ms = ::Asterism.time_ms("Asterism::Zenoh.scout", timeout, timeout_ms, nil, 1000)
       _scout(mask, ms, config)
     end
   end

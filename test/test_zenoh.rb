@@ -31,7 +31,7 @@ class TestZenoh < Minitest::Test
     refute @a.closed?
     assert_match(/\A\h+\z/, @a.zid)
     refute_equal @a.zid, @b.zid
-    assert_equal 1, @b.peers
+    assert_equal 1, @b.connection_count
   end
 
   def test_put_subscribe_with_attachment
@@ -76,7 +76,7 @@ class TestZenoh < Minitest::Test
   def test_get_queryable
     qa = @a.queryable("c1/q/**")
     @settle.call
-    g = @b.get("c1/q/one", 2000, "a=1;b=2", "body", attachment: "qatt")
+    g = @b.get("c1/q/one", timeout: 2.0, params: "a=1;b=2", payload: "body", attachment: "qatt")
     assert wait_for { qa.pending == 1 }
     n = qa.each_pending do |q|
       assert_equal "c1/q/one", q.key
@@ -112,7 +112,7 @@ class TestZenoh < Minitest::Test
 
   def test_get_nobody_answers_ends_at_once
     t = Time.now
-    g = @b.get("c1/nobody/here", 2000)
+    g = @b.get("c1/nobody/here", timeout_ms: 2000)
     assert wait_for(1.5) { g.done? }
     assert Time.now - t < 1.5
     assert_equal [], g.each_reply
@@ -122,7 +122,7 @@ class TestZenoh < Minitest::Test
     qa = @a.queryable("c1/slow")
     @settle.call
     t = Time.now
-    g = @b.get("c1/slow", 300)
+    g = @b.get("c1/slow", timeout: 0.3)
     assert wait_for(3) { g.done? }
     took = Time.now - t
     assert took >= 0.25, "done after #{took}s"
@@ -134,15 +134,15 @@ class TestZenoh < Minitest::Test
     plain = @a.queryable("c1/t/x")
     complete = @a.queryable("c1/t/**", 16, complete: true)
     @settle.call
-    g = @b.get("c1/t/x", 2000, nil, nil, target: :all_complete, consolidation: :none)
+    g = @b.get("c1/t/x", target: :all_complete, consolidation: :none)
     assert wait_for { complete.pending == 1 }
     sleep 0.2
     assert_equal 0, plain.pending, "a queryable that is not complete gets no ALL_COMPLETE query"
     complete.each_pending { |q| q.reply("c1/t/x", "ok") }
     assert wait_for { g.done? }
     assert_equal "ok", g.each_reply[0][1]
-    assert_raises(ArgumentError) { @b.get("c1/t/x", 100, nil, nil, target: :bogus) }
-    assert_raises(ArgumentError) { @b.get("c1/t/x", 100, nil, nil, consolidation: :bogus) }
+    assert_raises(ArgumentError) { @b.get("c1/t/x", timeout_ms: 100, target: :bogus) }
+    assert_raises(ArgumentError) { @b.get("c1/t/x", timeout_ms: 100, consolidation: :bogus) }
   end
 
   def test_liveliness
@@ -170,7 +170,7 @@ class TestZenoh < Minitest::Test
   def test_arguments
     assert_raises(ArgumentError) { @a.subscribe("c1/bad//key") }
     assert_raises(ArgumentError) { @a.subscribe("c1/x", 0) }
-    assert_raises(ArgumentError) { @a.get("c1/x", 0) }
+    assert_raises(ArgumentError) { @a.get("c1/x", timeout_ms: 0) }
     assert_raises(TypeError) { @a.put("c1/x", 1) }
     assert_raises(TypeError) { @a.put("c1/x", "v", attachment: 1) }
     assert_raises(ArgumentError) { @a.put("c1/x", "v", bogus: 1) }
@@ -199,7 +199,7 @@ class TestZenoh < Minitest::Test
     assert_equal [["c1/after", "kept", nil]], sub.each_pending, "values received before close stay readable"
     assert_raises(Z::Error) { @a.put("c1/after", "x") }
     assert_raises(Z::Error) { @a.subscribe("c1/after") }
-    assert_equal 0, @a.peers
+    assert_equal 0, @a.connection_count
   end
 end
 
@@ -226,9 +226,9 @@ class TestZenohLost < Minitest::Test
     loc = "tcp/127.0.0.1:#{TestHelper.free_port}"
     a = Z::Session.open(nil, mode: :peer, listen: loc)
     b = Z::Session.open(loc, mode: :peer)
-    assert wait_for { a.peers == 1 }
+    assert wait_for { a.connection_count == 1 }
     b.close
-    assert wait_for { a.peers == 0 }
+    assert wait_for { a.connection_count == 0 }
     assert a.poll
     refute a.closed?
     a.close

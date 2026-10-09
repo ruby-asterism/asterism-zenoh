@@ -1,6 +1,7 @@
 # zenoh-c feature coverage of asterism-zenoh
 
-Which zenoh-c 1.10.1 features the Ruby binding exposes (asterism-zenoh 0.3.0).
+Which zenoh-c 1.10.1 features the Ruby binding exposes (asterism-zenoh 0.4.0; 0.4.0 added
+keywords and seconds, not features).
 "Yes" = usable from Ruby, "Partial" = usable with fixed settings or a subset,
 "No" = not exposed, with the reason. The Ruby-like layer of the `asterism`
 gem builds on the same methods. The mruby gem (picoruby-asterism-zenoh) has
@@ -12,7 +13,7 @@ the feature. Everything added in 0.3.0 is CRuby only for now.
 | Session: client / peer / listen | `z_open` | Yes | `Session.open(loc, mode:, listen:)` | Yes (done) |
 | Session configuration | `zc_config_insert_json5`, `zc_config_from_str`, `zc_config_from_file` | Yes (0.3.0) | `config: {"key/path" => value}` (Ruby values sent as JSON), `config: "<JSON5>"`, `config_file:`. TLS, QUIC, WebSocket, authentication and timeouts are reachable this way; TLS is tested between two sessions | Partial (zenoh-pico has its own, smaller set of keys; no TLS on ESP32) |
 | Scouting (finding peers / routers) | `z_scout`, multicast scouting, gossip | Yes (0.3.0) | `Asterism::Zenoh.scout(what:, timeout:)` -> `Hello` (zid, whatami, locators); `Session.open(scouting: true)` | Yes (off on purpose: the locator is given) |
-| Session information | `z_info_zid`, `z_info_peers_zid`, `z_info_routers_zid`, `z_info_transports`, `z_info_links` | Yes (0.3.0) | `zid`, `peers` (count, as before), `peer_zids`, `router_zids`, `transports`, `links` | Yes (zid lists); transports / links: No |
+| Session information | `z_info_zid`, `z_info_peers_zid`, `z_info_routers_zid`, `z_info_transports`, `z_info_links` | Yes (0.3.0) | `zid`, `connection_count` (count; `peers` is its deprecated name), `peer_zids`, `router_zids`, `transports`, `links` | Yes (zid lists); transports / links: No |
 | put | `z_put` | Yes (0.3.0) | `put(key, payload, attachment:, encoding:, priority:, congestion_control:, express:, reliability:, timestamp:, allowed_destination:)` | Partial (encoding, priority, congestion control, express: yes) |
 | delete | `z_delete` | Yes (0.3.0) | `session.delete(key, ...)` | Yes |
 | Declared publisher | `z_declare_publisher`, `z_publisher_put`, `z_publisher_delete` | Yes (0.3.0) | `session.publisher(key, ...)` -> `put`, `delete`, `close` | Yes |

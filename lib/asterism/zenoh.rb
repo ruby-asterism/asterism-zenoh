@@ -8,3 +8,5 @@
 require_relative "zenoh/version"
 require_relative "asterism_zenoh"
 require_relative "zenoh/values"
+require_relative "zenoh/common"
+require_relative "zenoh/cruby"

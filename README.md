@@ -47,18 +47,24 @@ The same calls, arguments and results as the mruby / PicoRuby gem
 
 | Call | Notes |
 |---|---|
-| `Session.open(locator = nil, mode: :client, listen: nil)` | client of a router, or `mode: :peer` connecting to `locator` and/or listening on `listen:`. `Error` when nobody answers within `CONNECT_TIMEOUT_MS`. Releases the GVL while connecting |
+| `Session.open(locator = nil, mode: :client, listen: nil) { \|s\| }` | client of a router, or `mode: :peer` connecting to `locator` and/or listening on `listen:`. `Error` when nobody answers within `CONNECT_TIMEOUT_MS`. With a block: closes the session after it and returns the block's value. Releases the GVL while connecting |
 | `session.put(key, payload, attachment: nil)` | `payload` / `attachment` are Strings (bytes). Releases the GVL |
-| `session.subscribe(key, depth = 16)` -> `Subscriber` | `each_pending { \|key, payload, attachment\| }` (or an Array), `pending` / `received` / `dropped`, `close` / `closed?` |
-| `session.get(key, timeout_ms = 2000, params = nil, payload = nil, attachment: nil, target: :all, consolidation: :none)` -> `Get` | returns at once; `each_reply { \|key, payload, attachment\| }`, `done?`, `pending` / `received` / `dropped` / `errors` |
-| `session.queryable(key, depth = 16, complete: false)` -> `Queryable` | `each_pending { \|q\| }` (each query finished after the block) or an Array of `Query` |
-| `q.key` / `params` / `payload` / `attachment`, `q.reply([key,] payload, attachment: nil)`, `q.finish` / `finished?` | |
+| `session.subscribe(key, depth: 16)` -> `Subscriber` | `each_pending { \|key, payload, attachment\| }` (or an Array), `pending` / `received` / `dropped`, `close` / `closed?`. `depth` may also be positional |
+| `session.get(key, timeout: 2.0, params: nil, payload: nil, attachment: nil, target: :all, consolidation: :none)` -> `Get` | `timeout:` in seconds, or `timeout_ms:`. Returns at once; `each_reply { \|key, payload, attachment\| }`, `done?`, `pending` / `received` / `dropped` / `errors`. `consolidation: :none` (every reply) differs from zenoh's `:auto` on purpose: services and the object layer want every reply |
+| `session.queryable(key, depth: 16, complete: false)` -> `Queryable` | `each_pending { \|q\| }` (each query finished after the block) or an Array of `Query` |
+| `q.key` / `params` / `payload` / `attachment`, `q.reply(key, payload, attachment: nil)`, `q.finish` / `finished?` | `q.reply(payload)` answers on the query's key (see Deprecations) |
 | `session.liveliness(key)` -> `LivelinessToken` | `close` / `closed?` |
-| `session.liveliness_watch(key, depth = 16)` -> `LivelinessWatch` | `each_pending { \|key, alive\| }`; the tokens alive now come first |
-| `session.liveliness_get(key, timeout_ms = 2000)` -> `Get` | |
-| `session.poll(steps = 8)` / `closed?` / `close` / `zid` / `peers` | |
-| `Asterism::Zenoh::Error` | |
-| `CONNECT_TIMEOUT_MS`, `SEND_TIMEOUT_MS` (3000), `PEER` (true), `MAX_PEERS`, `C_VERSION` | `MAX_PEERS` is zenoh-c's `transport/unicast/max_sessions` (1000); `C_VERSION` stands for the mruby gem's `PICO_VERSION` |
+| `session.liveliness_watch(key, depth: 16)` -> `LivelinessWatch` | `each_pending { \|key, alive\| }`; the tokens alive now come first |
+| `session.liveliness_get(key, timeout: 2.0)` -> `Get` | or `timeout_ms:` |
+| `session.poll(steps = 8)` / `closed?` / `close` / `zid` / `connection_count` | `connection_count`: the routers (client) or peers (peer mode) connected now |
+| `Asterism::Error` > `Asterism::Zenoh::Error` > `Asterism::Zenoh::ClosedError` | `ClosedError`: the session is closed or its connection was lost. `Error#code`: zenoh-c's result code when there was one |
+| `CONNECT_TIMEOUT_MS`, `SEND_TIMEOUT_MS` (3000), `PEER` / `PEER_SUPPORTED` (true), `MAX_PEERS`, `BACKEND` (`:zenoh_c`), `BACKEND_VERSION` (= `C_VERSION`), `DEFAULT_TIMEOUT` (2.0 s), `VERSION` | `MAX_PEERS` is zenoh-c's `transport/unicast/max_sessions` (1000); on the boards `BACKEND` is `:zenoh_pico` |
+| `Asterism.deprecations = :warn / :raise / :silent` | how deprecated calls are reported (below) |
+
+Units: a keyword without a unit suffix is seconds (`timeout:`,
+`connect_timeout:`, `query_timeout:`); anything else carries its unit
+(`timeout_ms:`, `CONNECT_TIMEOUT_MS`). Giving a time limit twice
+(`timeout:` and `timeout_ms:`) raises `ArgumentError`.
 
 Keys come back as UTF-8 Strings, payloads and attachments as binary
 (ASCII-8BIT) Strings.
@@ -69,19 +75,19 @@ Every 0.2.0 call works as before; these are new keywords and methods.
 
 | Call | Notes |
 |---|---|
-| `Session.open(locator = nil, mode:, listen:, scouting:, timestamping:, config:, config_file:)` | `config:` a Hash (`{"transport/link/tls/root_ca_certificate" => "ca.pem"}`, Ruby values sent as JSON) or a JSON5 String; `config_file:` a JSON5 file. Lowest first: zenoh's defaults, the gem's own settings (no scouting, the time limits), the file / String, the arguments, the Hash. `scouting: true` needs no locator |
-| `Asterism::Zenoh.scout(what: [:router, :peer], timeout: 1.0, config: nil)` | Array of `Hello` (`zid`, `whatami`, `locators`) |
+| `Session.open(locator = nil, mode:, listen:, scouting:, timestamping:, config:, config_file:, connect_timeout:)` | `config:` a Hash (`{"transport/link/tls/root_ca_certificate" => "ca.pem"}`, Ruby values sent as JSON) or a JSON5 String; `config_file:` a JSON5 file. Lowest first: zenoh's defaults, the gem's own settings (no scouting, the time limits), the file / String, the arguments, the Hash. `scouting: true` needs no locator. `connect_timeout:` (seconds, 0.4.0) sets `connect/timeout_ms` |
+| `Asterism::Zenoh.scout(what: [:router, :peer], timeout: 1.0, config: nil)` (or `timeout_ms:`) | Array of `Hello` (`zid`, `whatami`, `locators`) |
 | `session.put(key, payload, attachment:, encoding:, priority:, congestion_control:, express:, reliability:, timestamp:, allowed_destination:)` | `priority:` `:real_time` .. `:background` (or 1..7), `congestion_control:` `:drop` / `:block` / `:block_first`, `reliability:` `:reliable` / `:best_effort`, `timestamp:` `true` or a `Timestamp`, `allowed_destination:` `:any` / `:remote` / `:session_local` |
 | `session.delete(key, ...)` | the same options without payload, attachment and encoding |
-| `session.publisher(key, encoding:, priority:, ...)` -> `Publisher` | `put(payload, attachment:, encoding:, timestamp:)`, `delete(timestamp:)`, `matching?`, `matching_listener(depth = 16)`, `close` / `closed?` |
-| `session.querier(key, target:, consolidation:, timeout_ms:, ...)` -> `Querier` | `get(params = nil, payload = nil, attachment:, encoding:)` -> `Get`, `matching?`, `matching_listener`, `close` |
+| `session.publisher(key, encoding:, priority:, ...)` -> `Publisher` | `put(payload, attachment:, encoding:, timestamp:)`, `delete(timestamp:)`, `matching?`, `matching_listener(depth: 16)`, `close` / `closed?` |
+| `session.querier(key, target:, consolidation:, timeout: 2.0, ...)` -> `Querier` | `timeout:` seconds or `timeout_ms:`; `get(params: nil, payload: nil, attachment:, encoding:)` -> `Get`, `matching?`, `matching_listener`, `close` |
 | `sub.each_sample { \|sample\| }` | `Sample` (`key`, `payload`, `attachment`, `kind`, `encoding`, `timestamp`, `priority`, `congestion_control`, `express`, `reliability`, `source_zid`); same queue as `each_pending` |
 | `get.each_result { \|reply\| }` | `Reply` (`ok?` / `error?`, `key`, `payload`, `encoding`, `kind`, `timestamp`, `replier_zid`); error replies included. `each_reply` still leaves them out |
 | `session.get(..., encoding:, priority:, congestion_control:, express:, accept_replies:)` | |
-| `q.reply(..., encoding:, timestamp:, priority:, congestion_control:, express:)`, `q.reply_err(payload, encoding:)`, `q.reply_del(key = nil)`, `q.encoding` | |
+| `q.reply(..., encoding:, timestamp:, priority:, congestion_control:, express:)`, `q.reply_error(payload, encoding:)`, `q.reply_delete(key = nil)`, `q.encoding` | `reply_err` / `reply_del` are the same (kept) |
 | `session.advanced_publisher(key, cache:, sample_miss_detection:, publisher_detection:, ...)` -> `AdvancedPublisher` | as `Publisher`. `cache: N` keeps the last N samples for late subscribers |
-| `session.advanced_subscriber(key, depth = 16, history:, recovery:, subscriber_detection:, query_timeout_ms:)` -> `AdvancedSubscriber` | as `Subscriber`, plus `detect_publishers` (a `LivelinessWatch`) and `miss_listener` (`Miss`: `source_zid`, `source_eid`, `count`) |
-| `session.transport_events(depth = 16, history: false)`, `session.link_events(...)` -> `EventListener` | `each_pending` gives `TransportEvent` / `LinkEvent` (`kind` `:added` / `:removed`, `zid`, ...) |
+| `session.advanced_subscriber(key, depth: 16, history:, recovery:, subscriber_detection:, query_timeout:)` -> `AdvancedSubscriber` | as `Subscriber`, plus `detect_publishers` (a `LivelinessWatch`) and `miss_listener` (`Miss`: `source_zid`, `source_eid`, `count`) |
+| `session.transport_events(depth: 16, history: false)`, `session.link_events(...)` -> `EventListener` | `each_pending` gives `TransportEvent` / `LinkEvent` (`kind` `:added` / `:removed`, `zid`, ...) |
 | `session.peer_zids`, `router_zids`, `transports`, `links` | the IDs, `Transport` and `Link` values connected now |
 | `session.new_timestamp` -> `Timestamp` | `ntp64`, `id`, `to_time`, Comparable. From the session's HLC with `timestamping: true` (strictly increasing); otherwise from the system clock, so two in a row may be equal |
 | `Asterism::Zenoh::KeyExpr.new(str, autocanonize: false)` | `intersects?`, `includes?`, `relation_to` (`:disjoint` / `:intersects` / `:includes` / `:equals`), `join`, `concat`, `==`; `KeyExpr.canonize(str)`, `KeyExpr.valid?(str)`. Accepted wherever a key String is |
@@ -91,7 +97,9 @@ Every 0.2.0 call works as before; these are new keywords and methods.
 Listeners (`MatchingListener`, `EventListener`) are polled like the
 subscribers: `each_pending` (yields or returns an Array), `pending`,
 `received`, `dropped`, `close` / `closed?`. The values are `Data` objects
-(`lib/asterism/zenoh/values.rb`), so they work with pattern matching.
+(`lib/asterism/zenoh/values.rb`), so they work with pattern matching; the
+boolean members also have predicates (`express?`, `multicast?`,
+`streamed?`).
 
 ```ruby
 Z = Asterism::Zenoh
@@ -124,6 +132,28 @@ Z::KeyExpr.new("demo/*").includes?("demo/temp")   # => true
 
 `require "asterism/zenoh/global"` defines `Zenoh = Asterism::Zenoh` for
 those who want the short name; nothing defines it by default.
+
+## Deprecations (0.4.0) and what 1.0 changes
+
+0.4.0 only adds; every 0.3.0 call still works. The old forms below warn
+once per name (`warn`; on the boards `puts` when there is no `warn`).
+`Asterism.deprecations = :raise` (or `ASTERISM_DEPRECATIONS=raise` in the
+environment) raises `Asterism::DeprecationError` instead, which is what
+the tests and CI use; `:silent` turns the warnings off.
+
+| Deprecated | Use | 1.0 |
+|---|---|---|
+| `get(key, timeout_ms, params, payload)` (the time as a positional argument) | `get(key, timeout: 2.0, params:, payload:)` or `timeout_ms:` | removed (positional depth stays) |
+| a Float there (`get(key, 2.0)` waits 2 ms) | `timeout: 2.0` | removed; warns with its own message now |
+| `liveliness_get(key, timeout_ms)` | `liveliness_get(key, timeout: 1.0)` | removed |
+| `session.peers` | `session.connection_count` | removed |
+| `q.reply(payload)` on a query whose key differs from the queryable's own plain key | `q.reply(key, payload)` | answers on the queryable's own key when it has no wildcard (as the CRuby block API of the `asterism` gem does) |
+
+Thread-safety: a `Session` and everything declared on it may be used from
+several threads (below); each queued entry goes to exactly one taker. A
+session opened before `fork` is unusable in the child: its calls raise
+`ClosedError` ("open a new session after fork"); the parent's session is
+not touched. Ractors are not supported.
 
 ## How receiving works
 

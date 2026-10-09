@@ -27,7 +27,7 @@ Gem::Specification.new do |s|
   # helper (zenoh_c.rb), ZENOH_C_PIN (assets and sha256), and the license
   # texts installed next to zenoh-c.
   s.files = Dir["lib/**/*.rb", "ext/**/*.{c,rb}", "licenses/zenoh-c/*",
-                "docs/*.md", "README.md", "LICENSE", "ZENOH_C_PIN"]
+                "docs/*.md", "README.md", "CHANGELOG.md", "LICENSE", "ZENOH_C_PIN"]
   s.extensions = ["ext/asterism_zenoh/extconf.rb"]
   s.require_paths = ["lib"]
 end

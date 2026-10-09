@@ -163,7 +163,7 @@ class TestFeatures < Minitest::Test
   def test_query_reply_arguments
     qa = @a.queryable("c7/qa")
     @settle.call
-    g = @b.get("c7/qa", 1000)
+    g = @b.get("c7/qa", timeout: 1.0)
     assert wait_for { qa.pending == 1 }
     qa.each_pending do |query|
       assert_nil query.encoding
@@ -289,7 +289,7 @@ class TestConfig < Minitest::Test
     loc = "tcp/127.0.0.1:#{TestHelper.free_port}"
     a = Z::Session.open(mode: :peer, config: { "listen/endpoints" => [loc] })
     b = Z::Session.open(loc, mode: :peer, config: { "connect/timeout_ms" => 1000 })
-    assert wait_for { a.peers == 1 }
+    assert wait_for { a.connection_count == 1 }
     refute a.closed?
     # The time limit of the config Hash wins over the gem's own 3 s.
     t = Time.now
@@ -330,7 +330,7 @@ class TestConfig < Minitest::Test
       path = File.join(dir, "zenoh.json5")
       File.write(path, "{mode: 'peer', connect: {endpoints: ['#{loc}']}}")
       b = Z::Session.open(config_file: path)
-      assert wait_for { a.peers == 1 && b.peers == 1 }
+      assert wait_for { a.connection_count == 1 && b.connection_count == 1 }
       b.close
       assert_raises(ArgumentError) { Z::Session.open(config_file: File.join(dir, "missing.json5")) }
       assert_raises(ArgumentError) { Z::Session.open(config_file: path, config: "{}") }

@@ -5,6 +5,11 @@ require "minitest/autorun"
 require "socket"
 require "asterism/zenoh"
 
+# Every deprecated call raises in the tests, so nothing in them (or in the
+# gem) uses an old form by accident; the tests of the old forms switch this
+# back to :warn around themselves (TestHelper#with_deprecations).
+Asterism.deprecations = :raise
+
 module TestHelper
   Z = Asterism::Zenoh
 
@@ -30,6 +35,17 @@ module TestHelper
       b = Z::Session.open(loc, mode: :peer)
       [a, b]
     end
+  end
+
+  # Runs the block with deprecations warning (not raising) and returns the
+  # warnings printed, one String each.
+  def with_deprecations
+    Asterism.reset_deprecations
+    Asterism.deprecations = :warn
+    _, err = capture_io { yield }
+    err.split("\n")
+  ensure
+    Asterism.deprecations = :raise
   end
 
   # Waits (polling) until the block is true or the time is up.
