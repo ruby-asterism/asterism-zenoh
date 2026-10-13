@@ -2,10 +2,10 @@
 
 All notable changes to asterism-zenoh. The mruby / PicoRuby binding
 (picoruby-asterism-zenoh) carries the same version number from 0.4.0 on.
-Nothing has been published to rubygems.org yet; the versions below are
-the ones in this repository.
+0.4.0 is the first version on rubygems.org; the earlier ones are only in
+this repository.
 
-## Unreleased
+## 0.4.1
 
 - A client session is no longer closed when its router goes away: zenoh-c
   reconnects and declares again by itself. `Session#reconnecting?` and

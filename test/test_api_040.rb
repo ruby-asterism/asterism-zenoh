@@ -44,7 +44,7 @@ class TestApi040 < Minitest::Test
     assert_equal Z::C_VERSION, Z::BACKEND_VERSION
     assert_equal Z::PEER, Z::PEER_SUPPORTED
     assert_equal 2.0, Z::DEFAULT_TIMEOUT
-    assert_equal "0.4.0", Z::VERSION
+    assert_equal "0.4.1", Z::VERSION
   end
 
   def test_connection_count_and_peers
