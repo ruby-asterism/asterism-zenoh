@@ -22,6 +22,7 @@ class TestZenoh < Minitest::Test
     assert_equal 3000, Z::SEND_TIMEOUT_MS
     assert Z::PEER
     assert Z::MAX_PEERS.positive?
+    assert Z::AUTO_RECONNECT, "zenoh-c reconnects a client session (rake test_reconnect)"
     refute Object.const_defined?(:Zenoh), "no top-level Zenoh without asterism/zenoh/global"
   end
 
@@ -29,6 +30,7 @@ class TestZenoh < Minitest::Test
     assert @a.poll
     assert @b.poll(8)
     refute @a.closed?
+    refute @a.reconnecting?, "connected (and a peer link never reconnects)"
     assert_match(/\A\h+\z/, @a.zid)
     refute_equal @a.zid, @b.zid
     assert_equal 1, @b.connection_count

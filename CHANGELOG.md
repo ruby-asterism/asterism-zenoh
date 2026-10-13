@@ -5,6 +5,12 @@ All notable changes to asterism-zenoh. The mruby / PicoRuby binding
 Nothing has been published to rubygems.org yet; the versions below are
 the ones in this repository.
 
+## Unreleased
+
+- A client session is no longer closed when its router goes away: zenoh-c
+  reconnects and declares again by itself. `Session#reconnecting?` and
+  `AUTO_RECONNECT` (true). `rake test_reconnect` (docker).
+
 ## 0.4.0
 
 The first step of the API review toward 1.0 (the asterism gem's

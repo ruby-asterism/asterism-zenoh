@@ -58,6 +58,52 @@ task test: :compile do
   end
 end
 
+desc "Reconnection over a router that restarts (needs docker and the zenohd image of zenoh-c's release)"
+task test_reconnect: :compile do
+  require "socket"
+  require "timeout"
+  port = TCPServer.new("127.0.0.1", 0).then { |sv| sv.addr[1].tap { sv.close } }
+  image = ENV["ZENOHD_IMAGE"] || "eclipse/zenoh:#{File.read(File.join(ROOT, "ZENOH_C_PIN"))[/^tag:\s*(\S+)/, 1]}"
+  name = "cruby-reconnect-#{Process.pid}"
+  sh "docker run -d --rm --name #{name} -p 127.0.0.1:#{port}:7447 #{image} " \
+     "--no-multicast-scouting -l tcp/0.0.0.0:7447 > /dev/null"
+  locator = "tcp/127.0.0.1:#{port}"
+  lib = File.join(ROOT, "lib")
+  stay = nil
+  begin
+    sleep 1.5
+    stay = IO.popen([RbConfig.ruby, "-I", lib, File.join(ROOT, "test/reconnect/stay.rb"), locator], err: [:child, :out])
+    line = Timeout.timeout(10) { stay.gets }
+    abort "stay.rb did not start: #{line.inspect}" unless line&.start_with?("ready")
+    puts "stay: #{line}"
+    sh "docker restart -t 1 #{name} > /dev/null"
+    out = []
+    Timeout.timeout(30) do
+      while (l = stay.gets)
+        puts "stay: #{l}"
+        out << l
+        break if l.start_with?("back", "closed")
+      end
+    end
+    abort "no reconnection" unless out.last.to_s.start_with?("back")
+    ok = system(RbConfig.ruby, "-I", lib, File.join(ROOT, "test/reconnect/newcomer.rb"), locator)
+    rest = Timeout.timeout(15) { stay.read }
+    puts rest.lines.map { "stay: #{_1}" }.join
+    abort "the declarations did not come back" unless ok && rest.include?("summary 2 1 token-open")
+    puts "reconnection: ok"
+  ensure
+    if stay
+      begin
+        Process.kill("TERM", stay.pid)
+      rescue Errno::ESRCH
+        nil
+      end
+      stay.close
+    end
+    system("docker rm -f #{name} > /dev/null 2>&1")
+  end
+end
+
 desc "Remove the build products (vendor/ stays)"
 task :clean do
   FileUtils.rm_rf(File.join(ROOT, "tmp"))

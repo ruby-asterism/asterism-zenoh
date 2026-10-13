@@ -30,11 +30,16 @@
  * it, the ones without it by the session's op_lock, and closing marks the
  * session closed for Ruby (with the GVL held) before zenoh-c drops it.
  *
- * Losing the connection (same rules as the mruby gem): a client session is
- * closed when it has no router left, a peer session that only connects when
- * it has no peer left; a listening peer session stays open. The check runs
- * in poll, closed?, put and get. From then on poll returns false, closed?
- * is true and put raises Asterism::Zenoh::Error. There is no reconnection.
+ * Losing the connection (same rules as the mruby gem):
+ * - A client session is not closed when its router goes away: zenoh-c opens
+ *   the connection again by itself and declares again what the session had
+ *   declared (subscribers, queryables, liveliness tokens and watches), so
+ *   the Ruby objects stay valid. Meanwhile reconnecting? is true (no
+ *   router), put reaches nobody and a get ends at its time limit.
+ * - A peer session that only connects is closed when it has no peer left; a
+ *   listening peer session stays open.
+ * The check runs in poll, closed?, put and get. Once closed, poll returns
+ * false, closed? is true and put raises Asterism::Zenoh::ClosedError.
  *
  * Lifetime: closing is optional. A session keeps lists of its live
  * subscribers, queryables and tokens and undeclares them before it closes,
@@ -2197,11 +2202,26 @@ static bool zrb_session_check_link(zrb_session *z) {
     if (z->peer && z->listening) {
         return false;
     }
+    if (!z->peer) {
+        /* A client: zenoh-c opens a lost router connection again by itself
+         * (and declares again what the session had declared), so no router
+         * now means "reconnecting", not closed. */
+        return false;
+    }
     if (zrb_session_links(z) == 0) {
         zrb_session_shutdown(z, true);
         return true;
     }
     return false;
+}
+
+/* True while a client session has no router (zenoh-c is opening the
+ * connection again). */
+static bool zrb_session_reconnecting(zrb_session *z) {
+    if (zrb_session_check_link(z) || z->peer) {
+        return false;
+    }
+    return zrb_session_links(z) == 0;
 }
 
 static zrb_session *zrb_session_get_open(VALUE self) {
@@ -2821,6 +2841,12 @@ static VALUE zrb_session_poll(int argc, VALUE *argv, VALUE self) {
 
 static VALUE zrb_session_closed_p(VALUE self) {
     return zrb_session_check_link(zrb_session_get(self)) ? Qtrue : Qfalse;
+}
+
+/* session.reconnecting? -> true while a client session has no router and
+ * zenoh-c opens the connection again (see the top of this file). */
+static VALUE zrb_session_reconnecting_p(VALUE self) {
+    return zrb_session_reconnecting(zrb_session_get(self)) ? Qtrue : Qfalse;
 }
 
 static VALUE zrb_session_close(VALUE self) {
@@ -4137,6 +4163,8 @@ void Init_asterism_zenoh(void) {
     rb_define_const(mZenoh, "CONNECT_TIMEOUT_MS", INT2FIX(ZRB_CONNECT_TIMEOUT_MS));
     rb_define_const(mZenoh, "SEND_TIMEOUT_MS", INT2FIX(ZRB_SEND_TIMEOUT_MS));
     rb_define_const(mZenoh, "PEER", Qtrue);
+    /* A client session opens a lost router connection again (zenoh-c). */
+    rb_define_const(mZenoh, "AUTO_RECONNECT", Qtrue);
     /* Queue depths: the default of subscribe, queryable and the listeners;
      * of get, liveliness_get and querier.get; of liveliness_watch; and the
      * largest accepted. */
@@ -4200,6 +4228,7 @@ void Init_asterism_zenoh(void) {
     rb_define_method(cSession, "connection_count", zrb_session_peers, 0);
     rb_define_method(cSession, "zid", zrb_session_zid, 0);
     rb_define_method(cSession, "closed?", zrb_session_closed_p, 0);
+    rb_define_method(cSession, "reconnecting?", zrb_session_reconnecting_p, 0);
     rb_define_method(cSession, "close", zrb_session_close, 0);
 
     /* Subscriber and LivelinessWatch share one C structure. */

@@ -183,10 +183,15 @@ thread and Enumerators on top of this API are in the CRuby layer of the
 - **Remote only**: a session's own puts do not reach its own subscribers,
   and its gets do not reach its own queryables (zenoh-pico's behaviour;
   Asterism calls its own objects in place).
-- **Losing the connection**: a client session is closed when it has no
-  router left, a peer session that only connects when it has no peer left;
-  a listening (or scouting) session stays open. From then on `poll` is false, `closed?`
-  true, and `put` raises `Asterism::Zenoh::Error`. No reconnection.
+- **Losing the connection**: a client session is not closed when its
+  router goes away: zenoh-c opens the connection again by itself and
+  declares again what the session had declared (subscribers, queryables,
+  liveliness tokens and watches); meanwhile `reconnecting?` is true, a put
+  reaches nobody and a get ends at its time limit (`rake test_reconnect`:
+  back about 1 s after a restarted zenohd). A peer session that only
+  connects is closed when it has no peer left; a listening (or scouting)
+  session stays open. Once closed, `poll` is false, `closed?` true, and
+  `put` raises `Asterism::Zenoh::ClosedError`.
 - **Full queues drop the oldest** entry and count it in `dropped` (a dropped
   query is finished, so its requester gets no answer from it).
 
